@@ -1,0 +1,72 @@
+#{include file="../Header.html"}
+<style>
+    .local-extension-card { border: 1px solid var(--bs-gray-300); border-radius: 14px; padding: 20px; height: 100%; }
+    .local-extension-card__meta { color: var(--bs-gray-600); font-size: 13px; }
+    .local-extension-card__description { min-height: 42px; color: var(--bs-gray-700); }
+    .local-extension-settings { display: grid; gap: 14px; }
+    .local-extension-settings label { font-weight: 600; }
+    /* Override the official transparent input background only for these sync controls. */
+    #local-extensions-root :is(
+        #local-extension-PikaSupplySync-sync_name,
+        #local-extension-PikaSupplySync-sync_cover,
+        #local-extension-PikaSupplySync-sync_description,
+        #local-extension-PikaSupplySync-sync_price,
+        #local-extension-PikaSupplySync-sync_inventory,
+        #local-extension-PikaSupplySync-sync_options,
+        #local-extension-PikaSupplySync-follow_upstream_config
+    ) {
+        background-color: var(--md-surface, #fff) !important;
+        border-color: var(--md-on-surface-med, #666);
+    }
+    #local-extensions-root :is(
+        #local-extension-PikaSupplySync-sync_name,
+        #local-extension-PikaSupplySync-sync_cover,
+        #local-extension-PikaSupplySync-sync_description,
+        #local-extension-PikaSupplySync-sync_price,
+        #local-extension-PikaSupplySync-sync_inventory,
+        #local-extension-PikaSupplySync-sync_options,
+        #local-extension-PikaSupplySync-follow_upstream_config
+    ):checked {
+        /* Keep the official white SVG legible in both light and dark themes. */
+        background-color: #1976D2 !important;
+        border-color: #1976D2;
+    }
+    #local-extensions-root :is(
+        #local-extension-PikaSupplySync-sync_name,
+        #local-extension-PikaSupplySync-sync_cover,
+        #local-extension-PikaSupplySync-sync_description,
+        #local-extension-PikaSupplySync-sync_price,
+        #local-extension-PikaSupplySync-sync_inventory,
+        #local-extension-PikaSupplySync-sync_options,
+        #local-extension-PikaSupplySync-follow_upstream_config
+    ):focus-visible {
+        outline: 2px solid var(--md-primary, #1976D2);
+        outline-offset: 3px;
+    }
+    .local-sync-status { border-top: 1px solid var(--bs-gray-300); padding-top: 16px; overflow-wrap: anywhere; }
+    .local-sync-source { border-top: 1px solid var(--bs-gray-300); padding: 10px 0; }
+    .local-sync-source summary { cursor: pointer; font-weight: 600; }
+    .local-sync-record { margin-top: 12px; font-size: 13px; }
+</style>
+<div class="content d-flex flex-column flex-column-fluid" id="kt_content">
+    #{include file="../Toolbar.html"}
+    <div class="post d-flex flex-column-fluid" id="kt_post">
+        <div id="kt_content_container" class="container-fluid">
+            <div class="card mb-5 mb-xl-8">
+                <div class="card-header border-0">
+                    <div class="card-title"><h3 class="fw-bolder m-0">#{t("本地扩展")}</h3></div>
+                </div>
+                <div class="card-body pt-2">
+                    <div class="alert alert-primary">
+                        #{t("此页面只管理已由服务器安装器验证并登记的开源扩展，不提供在线安装、URL、ZIP 或系统服务操作。")}
+                    </div>
+                    <div id="local-extensions-root"
+                         data-csrf="#{$local_extensions_csrf|escape:'html'}"
+                         aria-live="polite"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+#{ready("/assets/admin/controller/local-extensions/index.js?rev=20260922-catalog1")}
+#{include file="../Footer.html"}

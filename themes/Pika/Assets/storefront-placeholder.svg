@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Neutral Pika storefront background</title>
+  <desc id="desc">Abstract cream background with yellow and rose geometric shapes.</desc>
+  <rect width="1600" height="900" fill="#fffdf7"/>
+  <circle cx="1350" cy="150" r="330" fill="#ffd43b" opacity=".5"/>
+  <circle cx="220" cy="780" r="360" fill="#ff8fb7" opacity=".28"/>
+  <path d="M0 610C240 500 420 720 690 610s420-10 640-90 270-40 270-40v420H0z" fill="#f3ead8" opacity=".86"/>
+  <path d="M1040 130l90 105-66 116 145-48 88 105-5-148 140-51-145-40-8-146-79 121z" fill="#23262b" opacity=".08"/>
+</svg>

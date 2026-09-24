@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "PikaOrderReturnWait",
+  "name": "订单支付结果等待",
+  "version": "1.1.0",
+  "description": "支付返回后，在原订单页短暂等待并刷新付款结果；不处理支付或发货。",
+  "type": "plugin",
+  "namespace": "Pika\\LocalExtensions\\PikaOrderReturnWait\\",
+  "bootstrap": "bootstrap.php",
+  "hooks": [
+    {
+      "point": 560,
+      "class": "Pika\\LocalExtensions\\PikaOrderReturnWait\\Hook\\OrderReturnWait",
+      "method": "guestOrderPage",
+      "priority": 100
+    },
+    {
+      "point": 304,
+      "class": "Pika\\LocalExtensions\\PikaOrderReturnWait\\Hook\\OrderReturnWait",
+      "method": "memberOrderPage",
+      "priority": 100
+    }
+  ],
+  "settings": [
+    {
+      "key": "wait_seconds",
+      "label": "最长等待秒数",
+      "type": "number",
+      "required": true,
+      "default": 15,
+      "min": 5,
+      "max": 120
+    },
+    {
+      "key": "refresh_seconds",
+      "label": "页面刷新间隔",
+      "type": "number",
+      "required": true,
+      "default": 2,
+      "min": 1,
+      "max": 10
+    }
+  ],
+  "assets": [
+    {
+      "source": "Assets",
+      "target": "assets/local-extensions/PikaOrderReturnWait"
+    }
+  ]
+}

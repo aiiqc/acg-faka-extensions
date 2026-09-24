@@ -1,0 +1,102 @@
+.pika-order-wait[hidden] {
+    display: none !important;
+}
+
+.pika-order-wait {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483000;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgba(17, 24, 39, 0.42);
+    backdrop-filter: blur(4px);
+}
+
+.pika-order-wait__card {
+    width: min(430px, 100%);
+    box-sizing: border-box;
+    padding: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    border-radius: 22px;
+    color: #392f45;
+    text-align: center;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 24px 70px rgba(31, 20, 45, 0.22);
+}
+
+.pika-order-wait__spinner {
+    display: inline-block;
+    width: 42px;
+    height: 42px;
+    margin-bottom: 16px;
+    border: 4px solid rgba(235, 128, 184, 0.22);
+    border-top-color: #e877b5;
+    border-radius: 50%;
+    animation: pika-order-wait-spin 0.85s linear infinite;
+}
+
+.pika-order-wait__title {
+    margin: 0 0 8px;
+    font-size: 20px;
+    line-height: 1.4;
+}
+
+.pika-order-wait__message {
+    margin: 0;
+    color: #766b80;
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+.pika-order-wait__actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.pika-order-wait__link,
+.pika-order-wait__cancel {
+    box-sizing: border-box;
+    min-height: 40px;
+    padding: 9px 16px;
+    border: 0;
+    border-radius: 12px;
+    font: inherit;
+    line-height: 22px;
+    cursor: pointer;
+}
+
+.pika-order-wait__link {
+    color: #fff;
+    text-decoration: none;
+    background: linear-gradient(135deg, #e877b5, #b987e8);
+}
+
+.pika-order-wait__cancel {
+    color: #5f536a;
+    background: #f2edf5;
+}
+
+@keyframes pika-order-wait-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pika-order-wait__spinner {
+        animation: none;
+    }
+}
+
+@media (max-width: 480px) {
+    .pika-order-wait__card {
+        padding: 24px 18px;
+    }
+
+    .pika-order-wait__actions {
+        flex-direction: column;
+    }
+}

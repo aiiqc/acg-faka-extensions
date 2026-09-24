@@ -1,0 +1,32 @@
+#{assign var="_effectiveCategoryIcon" value='/app/View/User/Theme/Pika/Assets/topfans-logo.png'}
+#{if isset($inheritedCategoryIcon) && $inheritedCategoryIcon != '' && $inheritedCategoryIcon != '/favicon.ico'}
+    #{assign var="_effectiveCategoryIcon" value=$inheritedCategoryIcon}
+#{elseif $cate.icon && $cate.icon != '/favicon.ico'}
+    #{assign var="_effectiveCategoryIcon" value=$cate.icon}
+#{/if}
+#{if !empty($cate.children)}
+    <div class="fbfaka-category-group">
+        <button class="category-parent chip" id="category-parent-#{$cate.id|escape:'html'}" data-id="#{$cate.id|escape:'html'}" type="button" aria-expanded="false" aria-controls="category-children-#{$cate.id|escape:'html'}">
+            <img class="chip-icon#{if $_effectiveCategoryIcon == '/app/View/User/Theme/Pika/Assets/topfans-logo.png'} pika-default-icon#{/if}"
+                 src="#{$_effectiveCategoryIcon|escape:'html'}"
+                 alt="">
+            <span class="category-label" title="#{lang($cate.name)|escape:'html'}">#{lang($cate.name)|escape:'html'}</span>
+            <span class="category-count" data-category-total>0</span>
+            <i class="category-caret fa-duotone fa-regular fa-chevron-down" aria-hidden="true"></i>
+        </button>
+        <div class="category-children" id="category-children-#{$cate.id|escape:'html'}" role="group" aria-labelledby="category-parent-#{$cate.id|escape:'html'}" hidden>
+            #{foreach $cate.children as $child}
+                #{include file="./CategoryNode.html" cate=$child categoryId=$categoryId inheritedCategoryIcon=$_effectiveCategoryIcon}
+            #{/foreach}
+        </div>
+    </div>
+#{else}
+    #{if $cate.commodity_count > 0}
+    <a data-id="#{$cate.id|escape:'html'}" data-count="#{$cate.commodity_count|escape:'html'}" class="switch-category category-leaf chip #{if $cate.id == $categoryId} is-primary #{/if}" href="/cat/#{$cate.id|escape:'html'}">
+        #{if $cate.id != 'recommend'}<img class="chip-icon#{if $_effectiveCategoryIcon == '/app/View/User/Theme/Pika/Assets/topfans-logo.png'} pika-default-icon#{/if}" src="#{$_effectiveCategoryIcon|escape:'html'}" alt="">#{else}<span class="chip-icon chip-icon--recommend"><i class="fa-duotone fa-regular fa-stars" aria-hidden="true"></i></span>#{/if}
+        <span class="category-label" title="#{lang($cate.name)|escape:'html'}">#{lang($cate.name)|escape:'html'}</span>
+        <span class="category-count" aria-label="#{t('商品数量')}：#{$cate.commodity_count|escape:'html'}">#{$cate.commodity_count|escape:'html'}</span>
+        <i class="fa-duotone fa-regular fa-chevron-right" aria-hidden="true"></i>
+    </a>
+    #{/if}
+#{/if}

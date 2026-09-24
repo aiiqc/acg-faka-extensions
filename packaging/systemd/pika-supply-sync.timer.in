@@ -1,0 +1,16 @@
+# Managed by Pika LocalExtensions scheduler.sh
+# Pika-Instance: @@PIKA_INSTANCE@@
+# Pika-SiteRoot: @@PIKA_SITE_ROOT_RAW@@
+# Pika-WebUser: @@PIKA_WEB_USER@@
+[Unit]
+Description=Run Pika SupplySync for @@PIKA_INSTANCE@@ every @@PIKA_MINUTES@@ minutes
+
+[Timer]
+Unit=@@PIKA_SERVICE_UNIT@@
+OnActiveSec=@@PIKA_MINUTES@@min
+OnUnitInactiveSec=@@PIKA_MINUTES@@min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

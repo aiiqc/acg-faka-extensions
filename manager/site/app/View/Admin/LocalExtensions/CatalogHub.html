@@ -1,0 +1,50 @@
+#{include file="../Header.html"}
+<style>
+    .catalog-hub-panel { border: 1px solid var(--bs-gray-300); border-radius: 14px; padding: 20px; background: var(--bs-body-bg); }
+    .catalog-hub-stack { display: grid; gap: 14px; }
+    .catalog-hub-source-form { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 14px; align-items: end; }
+    .catalog-hub-source-form__submit { min-height: 43px; }
+    .catalog-hub-source-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--bs-gray-300); border-radius: 10px; }
+    .catalog-hub-source-row label { display: block; max-width: 320px; margin-top: 12px; }
+    .catalog-hub-advanced { padding: 14px; border: 1px dashed var(--bs-gray-400); border-radius: 10px; }
+    .catalog-hub-advanced > summary { cursor: pointer; }
+    .catalog-hub-mappings { display: grid; gap: 10px; max-height: 560px; overflow: auto; padding-right: 4px; }
+    .catalog-hub-mapping { display: grid; grid-template-columns: minmax(220px, 1.5fr) minmax(160px, 1fr) minmax(160px, 1fr); gap: 12px; align-items: end; padding: 12px; border: 1px solid var(--bs-gray-300); border-radius: 10px; }
+    .catalog-hub-mapping__source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+    .catalog-hub-mapping__source strong { overflow-wrap: anywhere; }
+    .catalog-hub-mapping--mirror { grid-template-columns: 1fr; }
+    .catalog-hub-confirm { display: grid; grid-template-columns: minmax(220px, 320px) auto; gap: 14px; align-items: end; }
+    .catalog-hub-plan-hash { overflow-wrap: anywhere; }
+    .catalog-hub-task { padding: 14px; border: 1px solid var(--bs-gray-300); border-radius: 10px; }
+    .catalog-hub-task__heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .catalog-hub-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .catalog-hub-muted { color: var(--bs-gray-600); font-size: 13px; }
+    @media (max-width: 991.98px) {
+        .catalog-hub-source-form, .catalog-hub-mapping, .catalog-hub-confirm { grid-template-columns: 1fr; }
+        .catalog-hub-source-row { grid-template-columns: 1fr; }
+    }
+</style>
+<div class="content d-flex flex-column flex-column-fluid" id="kt_content">
+    #{include file="../Toolbar.html"}
+    <div class="post d-flex flex-column-fluid" id="kt_post">
+        <div id="kt_content_container" class="container-fluid">
+            <div class="card mb-5 mb-xl-8">
+                <div class="card-header border-0">
+                    <div class="card-title"><h3 class="fw-bolder m-0">#{t("智能货源中心")}</h3></div>
+                </div>
+                <div class="card-body pt-2">
+                    <div class="alert alert-primary">
+                        #{t("唯一推荐流程：选择首次入库分类方式与本次新商品加价 → 接入并分析 → 确认冻结分类与加价 → 后台分批入库。默认智能分类；保留上游结构需上游配套扩展，不会持续同步分类改名或移动。加价默认 0%，只影响本次新商品。不要再到异次元原生店铺共享点击“接入货源”；原生按钮会绕过分类确认与后台任务控制，直接批量入库。")}
+                    </div>
+                    <div id="catalog-hub-root"
+                         data-csrf="#{$catalog_hub_csrf|escape:'html'}"
+                         aria-live="polite">
+                        <div class="alert alert-secondary">#{t("正在读取货源与后台任务…")}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+#{ready("/assets/admin/controller/local-extensions/catalog-hub.js?rev=20260917-mirror1")}
+#{include file="../Footer.html"}

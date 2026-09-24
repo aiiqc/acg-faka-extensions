@@ -1,0 +1,117 @@
+#{include file="./Header.html"}
+#{item_var($item)}
+<main class="container py-4 fbfaka-item-page">
+    <section class="panel fbfaka-item-hero">
+        <img src="#{if $item.cover}#{$item.cover|escape:'html'}#{else}/favicon.ico#{/if}" class="item-cover" alt="#{lang($item.name)|escape:'html'}">
+        <div class="fbfaka-item-heading">
+            <span class="fbfaka-item-kicker">#{if $item.delivery_way == 0}#{t("自动发货")}#{else}#{t("在线发货")}#{/if}</span>
+            <h1>#{lang($item.name)|escape:'html'}</h1>
+            <div class="fbfaka-item-badges">
+                #{if $item.seckill_status == 1}<span class="badge-soft snap-up" style="display:none"></span>#{/if}
+                <span class="badge-soft badge-soft-success">#{if $item.delivery_way == 0}#{t("自动发货")}#{else}#{t("在线发货")}#{/if}</span>
+                <span class="badge-soft badge-soft-success item-stock">#{t("库存")} #{$item.stock|escape:'html'}</span>
+            </div>
+        </div>
+        <a class="fbfaka-item-back" href="/" aria-label="#{t('返回商品列表')|escape:'html'}"><i class="fa-duotone fa-regular fa-arrow-left"></i></a>
+        <a class="fbfaka-item-share shared-button" href="javascript:void(0);" aria-label="#{t('分享商品')|escape:'html'}"><i class="fa-duotone fa-regular fa-share-nodes"></i></a>
+    </section>
+
+    <div class="fbfaka-item-layout">
+        <section class="panel item-detail fbfaka-item-description">
+            <div class="panel-header">
+                <span class="icon"><i class="fa-duotone fa-regular fa-memo-circle-info"></i></span>
+                <h2 class="panel-title">#{t("宝贝详情")}</h2>
+            </div>
+            <div class="panel-body">#{lang($item.description)}</div>
+        </section>
+
+        <aside class="panel fbfaka-purchase-card">
+            <div class="fbfaka-price-row">
+                <div class="abacus"><div class="price"><i class="fa-duotone fa-regular fa-spinner-third icon-spin fs-6"></i></div></div>
+                <span>#{t("单价")}</span>
+            </div>
+            <form method="post" class="vstack gap-3">
+                #{if !empty($item.config.category)}
+                    <div>
+                        <label class="form-label mb-1">#{t("宝贝类型")}</label>
+                        <div class="sku-list">
+                            #{foreach $item.config.category as $race => $price}
+                                <a class="switch-race sku #{if $price@first}is-primary#{/if}" data-sku="#{$race|escape:'html'}" data-price="#{$price|escape:'html'}" href="javascript:void(0);">#{lang($race)|escape:'html'}<span class="badge-money">#{$config.currency_symbol|escape:'html'}#{$price|escape:'html'}</span></a>
+                            #{/foreach}
+                        </div>
+                    </div>
+                #{/if}
+
+                #{if !empty($item.config.sku)}
+                    #{foreach $item.config.sku as $name => $sku}
+                        <div>
+                            <label class="form-label mb-1">#{lang($name)|escape:'html'}</label>
+                            <div class="sku-list">
+                                #{foreach $sku as $key => $price}
+                                    <a class="switch-sku sku #{if $price@first}is-primary#{/if}" data-sku="#{$name|escape:'html'}" data-value="#{$key|escape:'html'}" data-price="#{$price|escape:'html'}" href="javascript:void(0);">#{lang($key)|escape:'html'}#{if $price > 0}<span class="badge-money">+#{$config.currency_symbol|escape:'html'}#{$price|escape:'html'}</span>#{/if}</a>
+                                #{/foreach}
+                            </div>
+                        </div>
+                    #{/foreach}
+                #{/if}
+
+                #{if $item.draft_status == 1}
+                    <div>
+                        <input type="hidden" name="card_id" class="form-control">
+                        <label class="form-label mb-1">#{t("自选账号")}</label>
+                        <button type="button" class="optional-card">#{t("未自选,将随机发货")}</button>
+                    </div>
+                #{/if}
+
+                #{if !$user}
+                    <div>
+                        <label class="form-label mb-1">#{contact_type_msg($item.contact_type)|escape:'html'}</label>
+                        <input type="text" name="contact" class="form-control" placeholder="#{t('请输入您的')}#{contact_type_msg($item.contact_type)|escape:'html'}">
+                    </div>
+                #{/if}
+
+                #{if $item.coupon == 1}
+                    <div>
+                        <label class="form-label mb-1">#{t("优惠券")}</label>
+                        <input type="text" class="form-control" name="coupon" placeholder="#{t('优惠券代码，没有则不填')|escape:'html'}">
+                    </div>
+                #{/if}
+
+                #{widget_render($item.widget)}
+
+                #{if $item.password_status == 1}
+                    <div>
+                        <label class="form-label mb-1">#{t("查询密码")}</label>
+                        <input type="password" class="form-control" name="password" placeholder="#{t('设置查询订单的密码')|escape:'html'}">
+                    </div>
+                #{/if}
+
+                <div>
+                    <label class="form-label mb-1">#{t("购买数量")}</label>
+                    <div class="input-group qty-group">
+                        <button type="button" class="change-num-sub">-</button>
+                        <input type="number" class="form-control text-center" name="num" value="#{if $item.minimum > 0}#{$item.minimum|escape:'html'}#{else}1#{/if}">
+                        <button type="button" class="change-num-add">+</button>
+                    </div>
+                </div>
+
+                #{if $item.trade_captcha == 1}
+                    <div>
+                        <label class="form-label mb-1">#{t("人机验证")}</label>
+                        <div class="input-group fbfaka-captcha">
+                            <input type="text" class="form-control captcha-input" placeholder="#{t('图形验证码')|escape:'html'}" name="captcha">
+                            <div class="input-group-append"><img class="input-group-text captcha-img" src="/user/captcha/image?action=trade" alt="#{t('更换验证码')|escape:'html'}"></div>
+                        </div>
+                    </div>
+                #{/if}
+
+                <div class="cash-pay" style="display:none">
+                    <label class="form-label"><i class="fa-duotone fa-regular fa-cart-shopping"></i> #{t("支付方式")}</label>
+                    <div class="pay-list"#{if $user && isset($user.balance) && is_numeric($user.balance)} data-user-balance="#{$user.balance|escape:'html'}"#{/if}></div>
+                </div>
+            </form>
+        </aside>
+    </div>
+</main>
+#{ready("/app/View/User/Theme/Pika/Assets/item.js?rev=20260914")}
+#{include file="./Footer.html"}

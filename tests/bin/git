@@ -1,0 +1,57 @@
+#!/bin/bash
+set -euo pipefail
+
+# Integration-test adapter for the PHP image, which intentionally has no Git
+# client. Production scripts still require real Git. Host-side tests separately
+# run the same patch through `git apply --check`.
+
+readonly fixture_version="${PIKA_TEST_ACG_FAKA_VERSION:-}"
+readonly fixture_commit="${PIKA_TEST_ACG_FAKA_COMMIT:-}"
+[[ "$fixture_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    printf 'invalid or missing test Acg-Faka version\n' >&2
+    exit 2
+}
+[[ "$fixture_commit" =~ ^[a-f0-9]{40}$ ]] || {
+    printf 'invalid or missing test Acg-Faka commit SHA\n' >&2
+    exit 2
+}
+case "$fixture_version:$fixture_commit" in
+    3.6.4:4ff6ba9b28af8e529fc54f643eea5f8bf0bb02d6 | \
+    3.7.0:6e48aab25f08f4d1fc0dda6af84fa6852fbb37e4 | \
+    3.7.5:3430d0a881c4dccbdee1513473a402bcb1b1773d | \
+    3.7.9:5120942d2c13ac900d614b09cfd6fbf672b62840)
+        ;;
+    *)
+        printf 'unsupported test Acg-Faka version/commit pair\n' >&2
+        exit 2
+        ;;
+esac
+
+if (($# < 3)) || [[ "$1" != "-C" ]]; then
+    printf 'unsupported test git invocation\n' >&2
+    exit 2
+fi
+
+site_root="$2"
+shift 2
+[[ -d "$site_root/.git" ]] || exit 3
+
+case "$1" in
+    rev-parse)
+        [[ "${2:-}" == "HEAD" ]] || exit 2
+        printf '%s\n' "$fixture_commit"
+        ;;
+    apply)
+        shift
+        if [[ "${1:-}" == "--check" ]]; then
+            shift
+            patch --dry-run --silent --fuzz=0 --no-backup-if-mismatch -p1 -d "$site_root" -i "$1"
+        else
+            patch --silent --fuzz=0 --no-backup-if-mismatch -p1 -d "$site_root" -i "$1"
+        fi
+        ;;
+    *)
+        printf 'unsupported test git command: %s\n' "$1" >&2
+        exit 2
+        ;;
+esac

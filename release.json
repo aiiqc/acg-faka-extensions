@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "version": "0.1.0-dev",
+  "extensions": [
+    "PikaSupplySync",
+    "PikaCatalogHub",
+    "PikaOrderReturnWait"
+  ],
+  "themes": [
+    "Pika"
+  ],
+  "payment_adapters": [
+    "PikaBEpusdtAdapter"
+  ]
+}

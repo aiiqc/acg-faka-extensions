@@ -1,0 +1,65 @@
+diff --git a/app/Controller/Admin/Api/Config.php b/app/Controller/Admin/Api/Config.php
+--- a/app/Controller/Admin/Api/Config.php
++++ b/app/Controller/Admin/Api/Config.php
+@@ -685,8 +685,12 @@ class Config extends Manage
+         } catch (\Throwable $e) {
+             throw new JSONException("保存失败，请检查原因");
+         }
++        $isTrustedLocalTheme = class_exists(\Pika\LocalExtensions\Manager\Runtime::class)
++            && \Pika\LocalExtensions\Manager\Runtime::isTrustedTheme($settings['user_theme']);
++        if (!$isTrustedLocalTheme) {
++            _plugin_start($settings['user_theme'], true);
++        }
+ 
+-        _plugin_start($settings['user_theme'], true);
+         ManageLog::log($this->getManage(), "修改了网站设置");
+         return $this->json(200, '保存成功');
+     }
+diff --git a/kernel/Helper.php b/kernel/Helper.php
+--- a/kernel/Helper.php
++++ b/kernel/Helper.php
+@@ -334,10 +334,13 @@ if (!function_exists("feedback")) {
+ if (!function_exists("hook")) {
+     function hook(int $point, mixed &...$args)
+     {
+-        $result = Plugin::hook($point, ...$args);
++        $officialResult = Plugin::hook($point, ...$args);
++        if (class_exists(\Pika\LocalExtensions\Manager\Runtime::class)) {
++            return \Pika\LocalExtensions\Manager\Runtime::hook($point, $officialResult, ...$args);
++        }
+         //false 也是有效的决策结果（如 SMTP 钩子里表示“已处理但失败”），不能被当成空值吞掉
+-        if ($result !== null && $result !== "" && $result !== []) {
+-            return $result;
++        if ($officialResult !== null && $officialResult !== "" && $officialResult !== []) {
++            return $officialResult;
+         }
+     }
+ }
+@@ -345,7 +348,11 @@ if (!function_exists("hook")) {
+ if (!function_exists("getHookNum")) {
+     function getHookNum(int $point): int
+     {
+-        return Plugin::getHookNum($point);
++        $official = Plugin::getHookNum($point);
++        if (class_exists(\Pika\LocalExtensions\Manager\Runtime::class)) {
++            return $official + \Pika\LocalExtensions\Manager\Runtime::getHookNum($point);
++        }
++        return $official;
+     }
+ }
+ 
+diff --git a/kernel/Kernel.php b/kernel/Kernel.php
+--- a/kernel/Kernel.php
++++ b/kernel/Kernel.php
+@@ -19,6 +19,11 @@ error_reporting(0);
+ const BASE_PATH = __DIR__ . "/../";
+ require(BASE_PATH . '/vendor/autoload.php');
+ require("Helper.php");
++$localExtensionsBootstrap = BASE_PATH . '/local-extensions/bootstrap.php';
++if (is_file($localExtensionsBootstrap)) {
++    require_once $localExtensionsBootstrap;
++}
++unset($localExtensionsBootstrap);
+ 
+ define("BASE_APP_SERVER", match ((int)config("store")['server']) {
+     0 => App\Service\App::MAIN_SERVER,

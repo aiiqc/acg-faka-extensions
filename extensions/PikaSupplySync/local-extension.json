@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "id": "PikaSupplySync",
+  "name": "货源同步",
+  "version": "1.1.17",
+  "description": "使用异次元原生共享店铺协议安全同步多上游商品、库存与价格",
+  "type": "plugin",
+  "namespace": "Pika\\LocalExtensions\\PikaSupplySync\\",
+  "bootstrap": "bootstrap.php",
+  "hooks": [],
+  "settings": [
+    {"key": "sync_name", "label": "同步商品名称", "type": "checkbox"},
+    {"key": "sync_cover", "label": "同步商品图片", "type": "checkbox"},
+    {"key": "sync_description", "label": "同步商品说明", "type": "checkbox"},
+    {"key": "sync_price", "label": "同步价格（含已有规格价格）", "type": "checkbox"},
+    {"key": "sync_inventory", "label": "同步库存", "type": "checkbox"},
+    {"key": "sync_options", "label": "同步规格选项", "type": "checkbox"},
+    {
+      "key": "mode",
+      "label": "同步模式",
+      "type": "select",
+      "default": "basic",
+      "options": [
+        {"value": "basic", "label": "仅同步本扩展已导入商品"},
+        {"value": "full", "label": "同步并导入新品（不适用于智能货源中心货源）"}
+      ]
+    },
+    {
+      "key": "source_ids",
+      "label": "参与同步的货源（空=全部）",
+      "type": "text",
+      "default": "",
+      "max": 1024
+    },
+    {
+      "key": "follow_upstream_config_source_ids",
+      "label": "完整配置跟随的货源（启用时不可空）",
+      "type": "text",
+      "default": "",
+      "max": 1024
+    },
+    {"key": "follow_upstream_config", "label": "完整跟随所选货源配置", "type": "checkbox", "default": false},
+    {
+      "key": "premium_percent",
+      "label": "新商品加价百分比",
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 1000
+    },
+    {
+      "key": "batch_limit",
+      "label": "单货源每批上限",
+      "type": "number",
+      "default": 100,
+      "min": 1,
+      "max": 500
+    },
+    {
+      "key": "zero_fuse_percent",
+      "label": "批量清零熔断比例",
+      "type": "number",
+      "default": 10,
+      "min": 1,
+      "max": 100
+    },
+    {
+      "key": "zero_fuse_min",
+      "label": "批量清零熔断最少商品数",
+      "type": "number",
+      "default": 5,
+      "min": 1,
+      "max": 500
+    }
+  ]
+}

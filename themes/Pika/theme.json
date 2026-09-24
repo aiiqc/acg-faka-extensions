@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "id": "Pika",
+  "theme_key": "Pika",
+  "name": "Pika",
+  "version": "1.1.6",
+  "type": "theme",
+  "namespace": "App\\View\\User\\Theme\\Pika\\",
+  "entry": "Config.php",
+  "preserve": [
+    "Setting.php"
+  ],
+  "exclude": [
+    "Assets/storefront-bg.jpg"
+  ]
+}

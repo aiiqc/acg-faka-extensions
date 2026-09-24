@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "id": "PikaCatalogHub",
+  "name": "智能货源中心",
+  "version": "0.6.9",
+  "description": "管理共享货源、建议商品分类，确认后分批后台入库，支持暂停、继续和取消任务。",
+  "type": "plugin",
+  "namespace": "Pika\\LocalExtensions\\PikaCatalogHub\\",
+  "bootstrap": "bootstrap.php",
+  "hooks": [
+    {"point": 1793, "class": "Pika\\LocalExtensions\\PikaCatalogHub\\Hook\\NativeCategoryRename", "method": "toolbar", "priority": 100},
+    {"point": 36920, "class": "Pika\\LocalExtensions\\PikaCatalogHub\\Hook\\NativeCategoryRename", "method": "form", "priority": 100},
+    {"point": 50, "class": "Pika\\LocalExtensions\\PikaCatalogHub\\Hook\\SharedCategoryTree", "method": "after", "priority": 100}
+  ],
+  "settings": [],
+  "assets": [{"source": "Assets", "target": "assets/local-extensions/PikaCatalogHub"}]
+}

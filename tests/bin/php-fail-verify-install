@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "${1:-}" == */verify-install.php ]]; then
+    printf 'INJECTED_VERIFY_INSTALL_FAILURE\n' >&2
+    exit 98
+fi
+
+exec /usr/local/bin/php "$@"

@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "bridge_version": "0.1.0-dev",
+  "acg_faka": [
+    {
+      "version": "3.6.4",
+      "commit": "4ff6ba9b28af8e529fc54f643eea5f8bf0bb02d6",
+      "files": {
+        "config/app.php": "16ff24b14d58b460038969dd8f2736debf8d8a3607c473d0a625002551d11d81",
+        "kernel/Kernel.php": "442901f0d6c714fbfb739bf516da7708c788e985b84040fb28de0cd1e34eddf4",
+        "kernel/Helper.php": "261d59c2a962f3ac12cf1d5f7c6ce53ce279751acd4ad7ca7196ec7ec3f8a732",
+        "app/Controller/Admin/Api/Config.php": "ec2f7530dd13cb15d72a8e9100b1371272be86967b420e6a80c66a0129b043bd",
+        "app/View/Admin/Footer.html": "0449214c5b81a165a221c5a627f6d06198be7170221a9d88ad2d62150f63ee82",
+        "assets/common/js/editor/markdown/editorv2.js": "097a1e66f36740ba2f58f504134275e188e03cfed76e833ca62515e8563625a3"
+      },
+      "payment_files": {
+        "app/Consts/Pay.php": "c9037212b14b612edd458ebcf1de76dcab5f3d54156b8818f790fe5392f35cf2",
+        "app/Controller/User/Api/Order.php": "1a636b3bd1c9d6b984444a24cac5fae773b3dbb6aabeedb0ad62cd16c47c381f",
+        "app/Controller/User/Api/Recharge.php": "e716fb9ac03d8f9f96f9beb04d8f7704cefdc9b50f2740d42905d8cbe6eae67e",
+        "app/Controller/User/Api/RechargeNotification.php": "c08bd7d2b535527dc0c9fa6e003703cc0e44e7ca1efae991208a06f94b05c057",
+        "app/Controller/User/Index.php": "18be030be49bebe46cfb7185d3dee4720f324a2f86425a2253b1044a9acfe5c3",
+        "app/Controller/User/Personal.php": "c0410c7aa26b2866520e696df1d11f38860fb0c840596a0d2125c2c041b7321b",
+        "app/Controller/User/Recharge.php": "1386f2cf45817b3f9a364165795f518ade60bff816a0f64cd5b2853cafbc2beb",
+        "app/Entity/PayEntity.php": "8034ac26903f213607835d4f8fb0cd4fb3c0d3a54c5477d11a804ba893cba49a",
+        "app/Pay/Base.php": "290507b84dc529950ad99e74ded13cc3c86baee8e7dda9c7e23474f7a3f464f5",
+        "app/Pay/Pay.php": "424e1c304b7a84ba27e0f5579426cb085517686268f529d30f159e8c90ed47ca",
+        "app/Pay/Signature.php": "aa4792cd07184a82366040900b19b871f88828197bc9aaa23f1303b47432f47a",
+        "app/Service/Bind/Order.php": "528de4613a39f23042c3e08fd4545be68a0cdc087b98f715fbdd7038a82cef09",
+        "app/Service/Bind/Recharge.php": "8d804282e80a93345c1af3724caf959553f3776de3d5e46913ba347d8c6505be",
+        "app/Service/Order.php": "90d8ebb41bbe592c2ddd0cdf241febef68c0df16d5b6f240ed048fd114282fa3",
+        "app/Service/Recharge.php": "3a6f42fd64b22a4be545c713469190f4781dcf51631b0fdfe1e39f42ea4b0324",
+        "app/Util/PayConfig.php": "2dc85e0fe1fb3bbd187f6e0a9dc9da92959981805fda868545f2e4c513a9fe67",
+        "app/Util/PayFactory.php": "3fca5e1b21a5ea5e0a916d69c7f0e567552f1549dcaf1a50669e53ff51bd1710",
+        "app/Util/PayProfile.php": "582b79d2872c0895f6880d6ebebdc513216231ba7bb8cfaba4d1ebcf8909674f"
+      }
+    },
+    {
+      "version": "3.7.0",
+      "commit": "6e48aab25f08f4d1fc0dda6af84fa6852fbb37e4",
+      "files": {
+        "config/app.php": "e876e7e44e3e169d57da70eebc94852b3793639856d76de111d077e54c32e1b2",
+        "kernel/Kernel.php": "edd31ae68488dff37c757bc94fa21b7775e23cf5af4e23f06fd60e6957e4a830",
+        "kernel/Helper.php": "261d59c2a962f3ac12cf1d5f7c6ce53ce279751acd4ad7ca7196ec7ec3f8a732",
+        "app/Controller/Admin/Api/Config.php": "127af02d39bbcd85c0e8fc26bccfd8edb9211b4b748af62d733af89ce23a7baf",
+        "app/View/Admin/Footer.html": "0449214c5b81a165a221c5a627f6d06198be7170221a9d88ad2d62150f63ee82",
+        "assets/common/js/editor/markdown/editorv2.js": "164ef1e5cd7e6c42fc530fafce774c4211bd74fa92fe2ad1b032dcc7f72507de"
+      },
+      "payment_files": {
+        "app/Consts/Pay.php": "c9037212b14b612edd458ebcf1de76dcab5f3d54156b8818f790fe5392f35cf2",
+        "app/Controller/User/Api/Order.php": "1a636b3bd1c9d6b984444a24cac5fae773b3dbb6aabeedb0ad62cd16c47c381f",
+        "app/Controller/User/Api/Recharge.php": "e716fb9ac03d8f9f96f9beb04d8f7704cefdc9b50f2740d42905d8cbe6eae67e",
+        "app/Controller/User/Api/RechargeNotification.php": "c08bd7d2b535527dc0c9fa6e003703cc0e44e7ca1efae991208a06f94b05c057",
+        "app/Controller/User/Index.php": "18be030be49bebe46cfb7185d3dee4720f324a2f86425a2253b1044a9acfe5c3",
+        "app/Controller/User/Personal.php": "c0410c7aa26b2866520e696df1d11f38860fb0c840596a0d2125c2c041b7321b",
+        "app/Controller/User/Recharge.php": "1386f2cf45817b3f9a364165795f518ade60bff816a0f64cd5b2853cafbc2beb",
+        "app/Entity/PayEntity.php": "8034ac26903f213607835d4f8fb0cd4fb3c0d3a54c5477d11a804ba893cba49a",
+        "app/Pay/Base.php": "290507b84dc529950ad99e74ded13cc3c86baee8e7dda9c7e23474f7a3f464f5",
+        "app/Pay/Pay.php": "424e1c304b7a84ba27e0f5579426cb085517686268f529d30f159e8c90ed47ca",
+        "app/Pay/Signature.php": "aa4792cd07184a82366040900b19b871f88828197bc9aaa23f1303b47432f47a",
+        "app/Service/Bind/Order.php": "92c0b6638578686807fb32b99efb69384077eb20ec8bc32578730e0ec809cbc4",
+        "app/Service/Bind/Recharge.php": "8d804282e80a93345c1af3724caf959553f3776de3d5e46913ba347d8c6505be",
+        "app/Service/Order.php": "90d8ebb41bbe592c2ddd0cdf241febef68c0df16d5b6f240ed048fd114282fa3",
+        "app/Service/Recharge.php": "3a6f42fd64b22a4be545c713469190f4781dcf51631b0fdfe1e39f42ea4b0324",
+        "app/Util/PayConfig.php": "2dc85e0fe1fb3bbd187f6e0a9dc9da92959981805fda868545f2e4c513a9fe67",
+        "app/Util/PayFactory.php": "3fca5e1b21a5ea5e0a916d69c7f0e567552f1549dcaf1a50669e53ff51bd1710",
+        "app/Util/PayProfile.php": "582b79d2872c0895f6880d6ebebdc513216231ba7bb8cfaba4d1ebcf8909674f"
+      }
+    },
+    {
+      "version": "3.7.5",
+      "commit": "3430d0a881c4dccbdee1513473a402bcb1b1773d",
+      "files": {
+        "config/app.php": "8a78034f6d4bbf11abbd9ec890fb4fac8d43b928ef1d3da07bf397a4cad83ff7",
+        "kernel/Kernel.php": "edd31ae68488dff37c757bc94fa21b7775e23cf5af4e23f06fd60e6957e4a830",
+        "kernel/Helper.php": "ab992f096ec9f541bc596279bf7537704663303e1a9b0a24dc8f40e22f943a34",
+        "app/Controller/Admin/Api/Config.php": "93d3d6d595f7950aae8deefdf871645da1e0603f9a37346da969ce7b692b759d",
+        "app/View/Admin/Footer.html": "0449214c5b81a165a221c5a627f6d06198be7170221a9d88ad2d62150f63ee82",
+        "assets/common/js/editor/markdown/editorv2.js": "164ef1e5cd7e6c42fc530fafce774c4211bd74fa92fe2ad1b032dcc7f72507de"
+      },
+      "payment_files": {
+        "app/Consts/Pay.php": "c9037212b14b612edd458ebcf1de76dcab5f3d54156b8818f790fe5392f35cf2",
+        "app/Controller/User/Api/Order.php": "1a636b3bd1c9d6b984444a24cac5fae773b3dbb6aabeedb0ad62cd16c47c381f",
+        "app/Controller/User/Api/Recharge.php": "e716fb9ac03d8f9f96f9beb04d8f7704cefdc9b50f2740d42905d8cbe6eae67e",
+        "app/Controller/User/Api/RechargeNotification.php": "c08bd7d2b535527dc0c9fa6e003703cc0e44e7ca1efae991208a06f94b05c057",
+        "app/Controller/User/Index.php": "18be030be49bebe46cfb7185d3dee4720f324a2f86425a2253b1044a9acfe5c3",
+        "app/Controller/User/Personal.php": "c0410c7aa26b2866520e696df1d11f38860fb0c840596a0d2125c2c041b7321b",
+        "app/Controller/User/Recharge.php": "1386f2cf45817b3f9a364165795f518ade60bff816a0f64cd5b2853cafbc2beb",
+        "app/Entity/PayEntity.php": "8034ac26903f213607835d4f8fb0cd4fb3c0d3a54c5477d11a804ba893cba49a",
+        "app/Pay/Base.php": "290507b84dc529950ad99e74ded13cc3c86baee8e7dda9c7e23474f7a3f464f5",
+        "app/Pay/Pay.php": "424e1c304b7a84ba27e0f5579426cb085517686268f529d30f159e8c90ed47ca",
+        "app/Pay/Signature.php": "aa4792cd07184a82366040900b19b871f88828197bc9aaa23f1303b47432f47a",
+        "app/Service/Bind/Order.php": "3d59f122c816a53ed18492e4fa6f19434df290a8d2be1c17df8e8b6a0bd05b99",
+        "app/Service/Bind/Recharge.php": "e2ebbac628483272e61a4ca2c8279edeadd91de40ad4a4591440e7bba0ac1007",
+        "app/Service/Order.php": "90d8ebb41bbe592c2ddd0cdf241febef68c0df16d5b6f240ed048fd114282fa3",
+        "app/Service/Recharge.php": "3a6f42fd64b22a4be545c713469190f4781dcf51631b0fdfe1e39f42ea4b0324",
+        "app/Util/PayConfig.php": "2dc85e0fe1fb3bbd187f6e0a9dc9da92959981805fda868545f2e4c513a9fe67",
+        "app/Util/PayFactory.php": "3fca5e1b21a5ea5e0a916d69c7f0e567552f1549dcaf1a50669e53ff51bd1710",
+        "app/Util/PayProfile.php": "582b79d2872c0895f6880d6ebebdc513216231ba7bb8cfaba4d1ebcf8909674f"
+      }
+    },
+    {
+      "version": "3.7.9",
+      "commit": "5120942d2c13ac900d614b09cfd6fbf672b62840",
+      "files": {
+        "config/app.php": "6095cf94a9473e817bb7a92112617f5b476c23f5ab3b68c3114eea3cf6c3a0e7",
+        "kernel/Kernel.php": "42c1cdd227b76d04a809bfc0ee5dbc47cdb9ebf0c83b9c2f7be7e004456ab309",
+        "kernel/Helper.php": "ab992f096ec9f541bc596279bf7537704663303e1a9b0a24dc8f40e22f943a34",
+        "app/Controller/Admin/Api/Config.php": "2138e7a42998cd2a48a7f988a48445e314dc8d7c8281c31e2d7454b494e72a16",
+        "app/View/Admin/Footer.html": "0449214c5b81a165a221c5a627f6d06198be7170221a9d88ad2d62150f63ee82",
+        "assets/common/js/editor/markdown/editorv2.js": "385bf017dcc59775d4f05851b73f2777221b548e905c596ca4629c0ffd628fad"
+      },
+      "payment_files": {
+        "app/Consts/Pay.php": "c9037212b14b612edd458ebcf1de76dcab5f3d54156b8818f790fe5392f35cf2",
+        "app/Controller/User/Api/Order.php": "1a636b3bd1c9d6b984444a24cac5fae773b3dbb6aabeedb0ad62cd16c47c381f",
+        "app/Controller/User/Api/Recharge.php": "e716fb9ac03d8f9f96f9beb04d8f7704cefdc9b50f2740d42905d8cbe6eae67e",
+        "app/Controller/User/Api/RechargeNotification.php": "c08bd7d2b535527dc0c9fa6e003703cc0e44e7ca1efae991208a06f94b05c057",
+        "app/Controller/User/Index.php": "18be030be49bebe46cfb7185d3dee4720f324a2f86425a2253b1044a9acfe5c3",
+        "app/Controller/User/Personal.php": "c0410c7aa26b2866520e696df1d11f38860fb0c840596a0d2125c2c041b7321b",
+        "app/Controller/User/Recharge.php": "1386f2cf45817b3f9a364165795f518ade60bff816a0f64cd5b2853cafbc2beb",
+        "app/Entity/PayEntity.php": "8034ac26903f213607835d4f8fb0cd4fb3c0d3a54c5477d11a804ba893cba49a",
+        "app/Pay/Base.php": "290507b84dc529950ad99e74ded13cc3c86baee8e7dda9c7e23474f7a3f464f5",
+        "app/Pay/Pay.php": "424e1c304b7a84ba27e0f5579426cb085517686268f529d30f159e8c90ed47ca",
+        "app/Pay/Signature.php": "aa4792cd07184a82366040900b19b871f88828197bc9aaa23f1303b47432f47a",
+        "app/Service/Bind/Order.php": "63f7a45cc6410f965eee2eff4d798c4db99b6548b73cc3106cd700eed1fc1473",
+        "app/Service/Bind/Recharge.php": "e2ebbac628483272e61a4ca2c8279edeadd91de40ad4a4591440e7bba0ac1007",
+        "app/Service/Order.php": "90d8ebb41bbe592c2ddd0cdf241febef68c0df16d5b6f240ed048fd114282fa3",
+        "app/Service/Recharge.php": "3a6f42fd64b22a4be545c713469190f4781dcf51631b0fdfe1e39f42ea4b0324",
+        "app/Util/PayConfig.php": "2dc85e0fe1fb3bbd187f6e0a9dc9da92959981805fda868545f2e4c513a9fe67",
+        "app/Util/PayFactory.php": "3fca5e1b21a5ea5e0a916d69c7f0e567552f1549dcaf1a50669e53ff51bd1710",
+        "app/Util/PayProfile.php": "582b79d2872c0895f6880d6ebebdc513216231ba7bb8cfaba4d1ebcf8909674f"
+      }
+    }
+  ]
+}

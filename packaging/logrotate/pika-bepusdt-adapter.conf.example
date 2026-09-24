@@ -1,0 +1,30 @@
+# Replace all three placeholders and install as one exact per-site rule.
+# copytruncate is used because Acg-Faka does not expose a documented log-reopen
+# signal for payment adapters; create has no effect in this mode.
+# Use the same existing, protected state file for every scheduled/manual run.
+# Never use --skip-state-lock or /dev/null as the state file. Before restore,
+# isolate only this rule outside include paths and drain prior rotations;
+# restore must not hold the shared state lock or change other sites' scheduling.
+# Check the effective configuration: inherited extension/addextension options
+# are unsupported. Stable archives are runtime.log.1 and runtime.log.2.gz..7.gz.
+# Validate one authorized forced rotation before production.
+
+__SITE_ROOT__/app/Pay/PikaBEpusdtAdapter/runtime.log {
+    daily
+    maxsize 10M
+    rotate 7
+    start 1
+    noolddir
+    nodateext
+    missingok
+    notifempty
+    noallowhardlink
+    compress
+    compresscmd /usr/bin/gzip
+    uncompresscmd /usr/bin/gunzip
+    compressext .gz
+    compressoptions -6
+    delaycompress
+    copytruncate
+    create 0640 __WEB_USER__ __WEB_GROUP__
+}

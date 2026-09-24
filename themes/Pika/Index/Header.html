@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="#{lang_code()}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <meta name="keywords" content="#{$config.keywords|escape:'html'}"/>
+    <meta name="description" content="#{$config.description|escape:'html'}"/>
+    <meta name="generator" content="Pika">
+    <meta name="theme-color" content="#ffd43b">
+    <link rel="icon" type="image/png" href="/app/View/User/Theme/Pika/Assets/pika-favicon-1.0.3.png">
+    #{if isset($tradeNo)}
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    #{/if}
+    #{if isset($item) || isset($tradeNo)}
+    <title>#{$title|escape:'html'} - #{$config.shop_name|escape:'html'}</title>
+    #{else}
+    <title>#{$config.title|escape:'html'}</title>
+    #{/if}
+    #{css(
+    [
+    "/assets/common/css/bootstrap.min.css",
+    "/assets/common/css/_.css",
+    "/assets/user/css/index.css"
+    ],
+    [
+    "/assets/common/css/font.min.css",
+    "/assets/common/js/layui/css/layui.css",
+    "/assets/common/css/select2.min.css",
+    "/assets/common/css/component.css",
+    "/assets/common/js/table/bootstrap-table.css",
+    "/assets/common/js/layer/theme/default/layer.css",
+    "/assets/common/css/bootstrap.min.css",
+    "/assets/common/css/toastr.min.css",
+    "/assets/user/css/index.css"
+    ])}
+    <link rel="stylesheet" href="/app/View/User/Theme/Pika/Assets/pika.css?theme=1.1.6&amp;rev=20260915-scroll1">
+    #{js("/assets/common/js/ready.js")}
+    #{index_var()}
+    <!--start::HOOK-->
+    #{hook(\App\Consts\Hook::USER_GLOBAL_VIEW_HEADER)}
+    #{hook(\App\Consts\Hook::USER_VIEW_INDEX_HEADER)}
+    <!--end::HOOK-->
+</head>
+<body class="fbfaka-public" data-pika-theme="Pika">
+<video class="fbfaka-background-video" autoplay muted loop playsinline preload="metadata"
+       poster="/app/View/User/Theme/Pika/Assets/topfans-bg-poster.jpg" aria-hidden="true">
+    <source src="/app/View/User/Theme/Pika/Assets/topfans-bg.mp4" type="video/mp4">
+</video>
+<nav class="navbar navbar-expand-xl navbar-acg">
+    <div class="container">
+        <a class="navbar-brand fw-bold d-flex align-items-center" href="/">
+            <img src="/app/View/User/Theme/Pika/Assets/topfans-logo.png" alt="Pika Logo" class="brand-logo me-2">
+            <span>#{$config.shop_name|escape:'html'}</span>
+        </a>
+
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+                aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto mb-lg-0">
+                #{foreach user_header_nav() as $nav}
+                    #{assign var="_pikaNavUrl" value=$nav.url|default:''}
+                    #{if preg_match('#^(?:https?://[^\\x00-\\x20\\\\]+|(?![A-Za-z][A-Za-z0-9+.-]*:)(?!//)(?!\\\\)[^\\x00-\\x20\\\\]+)$#iD', $_pikaNavUrl)}
+                        #{assign var="_pikaNavTarget" value="_self"}
+                        #{if isset($nav.target) && $nav.target == '_blank'}#{assign var="_pikaNavTarget" value="_blank"}#{/if}
+                        <li class="nav-item"><a class="nav-link #{if $nav.match}#{active($nav.match)}#{/if}"
+                                                href="#{$_pikaNavUrl|escape:'html'}" target="#{$_pikaNavTarget}"#{if $_pikaNavTarget == '_blank'} rel="noopener noreferrer"#{/if}>#{user_nav_icon($nav, 'nav-icon')}#{$nav.name|escape:'html'}</a></li>
+                    #{/if}
+                #{/foreach}
+                <li class="nav-item"><a class="nav-link #{if active('/user/business/index')}active#{/if}" href="/user/business/index"><i
+                                class="fa-duotone fa-regular fa-store nav-icon"></i>#{t("我的店铺")|escape:'html'}</a></li>
+                <li class="nav-item"><a class="nav-link" href="/user/recharge/index"><i
+                                class="fa-duotone fa-regular fa-wallet nav-icon"></i>#{t("充值中心")|escape:'html'}</a></li>
+                <li class="nav-item"><a class="nav-link" href="/#fbfaka-rules" data-pika-rules-navigation><i
+                                class="fa-duotone fa-regular fa-shield-check nav-icon"></i>#{t("用户规则")|escape:'html'}</a></li>
+            </ul>
+            <div class="d-none d-lg-flex search-input fbfaka-header-search" role="search">
+                <div class="input-group">
+                    <span class="input-group-text"><i
+                                class="fa-duotone fa-regular fa-magnifying-glass nav-icon"></i></span>
+                    <input class="form-control item-search-input" type="search" placeholder="#{t('搜索商品关键词..')|escape:'html'}"
+                           aria-label="#{t('搜索商品关键词..')|escape:'html'}">
+                </div>
+            </div>
+        </div>
+
+        #{if $user}
+            <div class="ms-2 user-info-box">
+                <div class="dropdown">
+                    <button class="btn btn-link text-decoration-none dropdown-toggle d-flex align-items-center"
+                            type="button" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                        <img id="user-avatar"
+                             src="#{if !$user.avatar || $user.avatar == '/favicon.ico'}/app/View/User/Theme/Pika/Assets/topfans-logo.png#{else}#{$user.avatar|escape:'html'}#{/if}"
+                             alt="#{t('用户头像')|escape:'html'}"
+                             class="pika-user-avatar#{if !$user.avatar || $user.avatar == '/favicon.ico'} pika-user-avatar--brand#{/if} rounded-circle me-2">
+                        <div class="d-flex flex-column align-items-start me-2">
+                                <span id="username" class="fw-bold text-dark"
+                                      style="font-size: 14px; line-height: 1.2;">#{$user.username|escape:'html'}</span>
+                            <span id="user-balance" class="text-muted" style="font-size: 12px; line-height: 1.2;">#{t("余额:")|escape:'html'} <span
+                                        class="text-success">#{$config.currency_symbol|escape:'html'}#{$user.balance|escape:'html'}</span></span>
+                        </div>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
+                        <li><a class="dropdown-item" href="/user/dashboard/index"><i
+                                        class="fa-duotone fa-regular fa-user me-2"></i>#{t("个人中心")|escape:'html'}</a></li>
+                        <li><a class="dropdown-item" href="/user/recharge/index"><i
+                                        class="fa-duotone fa-regular fa-wallet me-2"></i>#{t("钱包充值")|escape:'html'}</a></li>
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+                        <li><a class="dropdown-item" href="/user/personal/purchaseRecord"><i
+                                        class="fa-duotone fa-regular fa-receipt me-2"></i>#{t("我的订单")|escape:'html'}</a></li>
+                        <li><a class="dropdown-item" href="/user/security/personal"><i
+                                        class="fa-duotone fa-regular fa-gear me-2"></i>#{t("设置")|escape:'html'}</a></li>
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+                        <li><a class="dropdown-item text-danger" href="/user/authentication/logout"><i
+                                        class="fa-duotone fa-regular fa-sign-out me-2"></i>#{t("退出登录")|escape:'html'}</a></li>
+                    </ul>
+                </div>
+            </div>
+        #{else}
+            <div class="ms-2 user-login-box">
+                <a class="btn btn-outline-secondary btn-sm br-12" href="/user/authentication/login"><i
+                            class="fa-duotone fa-regular fa-right-to-bracket nav-icon"></i>#{t("登录")|escape:'html'}</a>
+                <a class="btn btn-primary btn-sm br-12" href="/user/authentication/register"><i
+                            class="fa-duotone fa-regular fa-user-plus nav-icon"></i>#{t("创建账号")|escape:'html'}</a>
+            </div>
+        #{/if}
+
+    </div>
+</nav>
+<div id="pjax-container">

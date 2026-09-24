@@ -1,0 +1,98 @@
+diff --git a/app/Controller/Admin/Api/Config.php b/app/Controller/Admin/Api/Config.php
+--- a/app/Controller/Admin/Api/Config.php
++++ b/app/Controller/Admin/Api/Config.php
+@@ -815,7 +815,11 @@ class Config extends Manage
+         // Preserve the pre-existing theme/plugin licence validation semantics.
+         // This is deliberately not exercised by mobile QA because it may update
+         // plugin/theme state according to the remote licence response.
+-        _plugin_start($settings['user_theme'], true);
++        $isTrustedLocalTheme = class_exists(\Pika\LocalExtensions\Manager\Runtime::class)
++            && \Pika\LocalExtensions\Manager\Runtime::isTrustedTheme($settings['user_theme']);
++        if (!$isTrustedLocalTheme) {
++            _plugin_start($settings['user_theme'], true);
++        }
+         ManageLog::log($this->getManage(), "修改了网站设置");
+         return $this->json(200, '保存成功');
+     }
+diff --git a/app/View/Admin/Footer.html b/app/View/Admin/Footer.html
+--- a/app/View/Admin/Footer.html
++++ b/app/View/Admin/Footer.html
+@@ -19,7 +19,7 @@
+ "/assets/static/codemirror/mode/markdown/markdown.js",
+ "/assets/common/js/editor/markdown/marked.min.js",
+ "/assets/common/js/editor/markdown/turndown.min.js",
+-"/assets/common/js/editor/markdown/_editorv2.js",
++"/assets/common/js/editor/markdown/editorv2.js?pika_bridge=editorv2-3.6.5",
+ "/assets/admin/js/_mobile.js"
+ ],
+ [
+diff --git a/assets/common/js/editor/markdown/editorv2.js b/assets/common/js/editor/markdown/editorv2.js
+--- a/assets/common/js/editor/markdown/editorv2.js
++++ b/assets/common/js/editor/markdown/editorv2.js
+@@ -227,6 +227,7 @@
+         let rid;
+         const render = () => {
+             if (destroyed) return;
++            if ($editor.attr('data-mode') === 'html') return;
+             const src = cm.getValue();
+             const html = src.trim() === '' ? '' : md2html(src);
+             $textarea.val(html);
+@@ -402,6 +403,10 @@
+             getHTML: () => {
+                 if (destroyed) return $textarea.val();
+                 clearTimeout(rid);
++                if (aceEditor) {
++                    $textarea.val(aceEditor.getValue());
++                    return $textarea.val();
++                }
+                 render();
+                 return $textarea.val();
+             },
+diff --git a/kernel/Helper.php b/kernel/Helper.php
+--- a/kernel/Helper.php
++++ b/kernel/Helper.php
+@@ -323,10 +323,13 @@ if (!function_exists("feedback")) {
+ if (!function_exists("hook")) {
+     function hook(int $point, mixed &...$args)
+     {
+-        $result = Plugin::hook($point, ...$args);
++        $officialResult = Plugin::hook($point, ...$args);
++        if (class_exists(\Pika\LocalExtensions\Manager\Runtime::class)) {
++            return \Pika\LocalExtensions\Manager\Runtime::hook($point, $officialResult, ...$args);
++        }
+         //false 也是有效的决策结果（如 SMTP 钩子里表示“已处理但失败”），不能被当成空值吞掉
+-        if ($result !== null && $result !== "" && $result !== []) {
+-            return $result;
++        if ($officialResult !== null && $officialResult !== "" && $officialResult !== []) {
++            return $officialResult;
+         }
+     }
+ }
+@@ -334,7 +337,11 @@ if (!function_exists("hook")) {
+ if (!function_exists("getHookNum")) {
+     function getHookNum(int $point): int
+     {
+-        return Plugin::getHookNum($point);
++        $official = Plugin::getHookNum($point);
++        if (class_exists(\Pika\LocalExtensions\Manager\Runtime::class)) {
++            return $official + \Pika\LocalExtensions\Manager\Runtime::getHookNum($point);
++        }
++        return $official;
+     }
+ }
+
+diff --git a/kernel/Kernel.php b/kernel/Kernel.php
+--- a/kernel/Kernel.php
++++ b/kernel/Kernel.php
+@@ -20,6 +20,11 @@ error_reporting(0);
+ const BASE_PATH = __DIR__ . "/../";
+ require(BASE_PATH . '/vendor/autoload.php');
+ require("Helper.php");
++$localExtensionsBootstrap = BASE_PATH . '/local-extensions/bootstrap.php';
++if (is_file($localExtensionsBootstrap)) {
++    require_once $localExtensionsBootstrap;
++}
++unset($localExtensionsBootstrap);
+ //define
+ define("BASE_APP_SERVER", match ((int)config("store")['server']) {
+     0 => App\Service\App::MAIN_SERVER,

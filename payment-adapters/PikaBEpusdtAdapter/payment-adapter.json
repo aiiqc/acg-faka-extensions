@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "PikaBEpusdtAdapter",
+  "type": "payment-adapter",
+  "version": "0.1.2",
+  "target": "app/Pay/PikaBEpusdtAdapter"
+}

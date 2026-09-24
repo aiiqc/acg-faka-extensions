@@ -1,0 +1,10 @@
+.DS_Store
+dist/
+build/
+*.log
+*.tmp
+tests/.work/
+
+# This superseded background is retained only in the local working copy. The
+# packaged Pika theme uses the matching poster and video assets instead.
+themes/Pika/Assets/storefront-bg.jpg

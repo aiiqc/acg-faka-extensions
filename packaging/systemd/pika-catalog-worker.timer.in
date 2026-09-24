@@ -1,0 +1,16 @@
+# Managed by Pika LocalExtensions scheduler.sh
+# Pika-Instance: @@PIKA_INSTANCE@@
+# Pika-SiteRoot: @@PIKA_SITE_ROOT_RAW@@
+# Pika-WebUser: @@PIKA_WEB_USER@@
+[Unit]
+Description=Run Pika CatalogHub background worker for @@PIKA_INSTANCE@@ about one minute after the prior run becomes inactive
+
+[Timer]
+Unit=@@PIKA_SERVICE_UNIT@@
+OnActiveSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

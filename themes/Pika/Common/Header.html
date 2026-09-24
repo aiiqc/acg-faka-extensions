@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="#{lang_code()}" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <title>#{$title|escape:'html'} - #{$config.title|escape:'html'}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+
+    <meta name="generator" content="Pika">
+    <meta name="theme-color" content="#ffd43b">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <link rel="icon" type="image/png" href="/app/View/User/Theme/Pika/Assets/pika-favicon-1.0.3.png">
+
+    #{css(
+    [
+    "/assets/common/css/_.css",
+    "/assets/user/css/_user.css",
+    "/assets/static/codemirror/lib/codemirror.css",
+    "/assets/common/css/_material.css",
+    "/assets/common/fonts/material-icons.css",
+    "/assets/user/css/_glass.css"
+    ],
+    [
+    "/assets/common/css/font.min.css",
+    "/assets/common/js/layui/css/layui.css",
+    "/assets/common/css/select2.min.css",
+    "/assets/common/css/toastr.min.css",
+    "/assets/common/js/table/bootstrap-table.css",
+    "/assets/common/js/layer/theme/default/layer.css",
+    "/assets/common/css/component.css",
+    "/assets/user/css/global_2.css",
+    "/assets/static/codemirror/lib/codemirror.css",
+    "/assets/common/css/md-tokens.css",
+    "/assets/common/css/md-components.css",
+    "/assets/common/fonts/material-icons.css",
+    "/assets/user/css/glass.css"
+    ])}
+    <link rel="stylesheet" href="/app/View/User/Theme/Pika/Assets/pika.css?theme=1.1.6&amp;rev=20260915-scroll1">
+
+    #{js("/assets/common/js/ready.js")}
+    #{index_var()}
+    <script>(function(){document.documentElement.setAttribute('data-theme','light');try{localStorage.setItem('uc-theme','light');}catch(e){}})();</script>
+
+    <!--start::HOOK-->
+    #{hook(\App\Consts\Hook::USER_VIEW_HEADER)}
+    <!--end::HOOK-->
+</head>
+<body class="uc-body fbfaka-member" data-pika-theme="Pika">
+<video class="fbfaka-background-video" autoplay muted loop playsinline preload="metadata"
+       poster="/app/View/User/Theme/Pika/Assets/topfans-bg-poster.jpg" aria-hidden="true">
+    <source src="/app/View/User/Theme/Pika/Assets/topfans-bg.mp4" type="video/mp4">
+</video>
+<div class="net-loading" style="display: none;">
+    <div class="loading-view">
+        <div class="loading-image"></div>
+    </div>
+</div>
+<div class="bg-content uc-bg">
+
+    <!-- ===== 顶部悬浮二级导航 ===== -->
+    <div class="uc-nav-wrap">
+        <nav class="uc-nav">
+            <a class="uc-brand" href="/" data-pika-full-navigation>
+                <img class="uc-brand__logo" src="/app/View/User/Theme/Pika/Assets/topfans-logo.png" alt="Pika Logo">
+                <span class="uc-brand__name">#{$config.shop_name|escape:'html'}</span>
+            </a>
+
+            <ul class="uc-nav__list">
+                <li>
+                    <a class="uc-nav__item" href="/user/dashboard/index" data-match="/user/dashboard/index">
+                        <span class="material-icons-outlined">space_dashboard</span>#{t("我的主页")}
+                    </a>
+                </li>
+
+                <li class="uc-has-sub">
+                    <a class="uc-nav__item" href="javascript:;">
+                        <span class="material-icons-outlined">storefront</span>#{t("店铺")}
+                        <span class="material-icons-outlined uc-caret">expand_more</span>
+                    </a>
+                    <div class="uc-submenu">
+                        <a class="uc-subitem" href="/user/business/index" data-match="/user/business/index">
+                            <span class="material-icons-outlined">store</span>#{t("我的店铺")}
+                            #{if $user.businessLevel}<span class="uc-subitem__badge">#{lang($user.businessLevel.name)|escape:'html'}</span>#{/if}
+                        </a>
+                        #{if $user.businessLevel and $user.businessLevel.supplier == 1}
+                        <a class="uc-subitem" href="/user/category/index" data-match="/user/category/index">
+                            <span class="material-icons-outlined">category</span>#{t("商品分类")}
+                        </a>
+                        <a class="uc-subitem" href="/user/commodity/index" data-match="/user/commodity/index">
+                            <span class="material-icons-outlined">inventory_2</span>#{t("我的商品")}
+                        </a>
+                        <a class="uc-subitem" href="/user/card/index" data-match="/user/card/index">
+                            <span class="material-icons-outlined">vpn_key</span>#{t("卡密管理")}
+                        </a>
+                        <a class="uc-subitem" href="/user/coupon/index" data-match="/user/coupon/index">
+                            <span class="material-icons-outlined">local_offer</span>#{t("代卷管理")}
+                        </a>
+                        <a class="uc-subitem" href="/user/order/index" data-match="/user/order/index">
+                            <span class="material-icons-outlined">receipt_long</span>#{t("商品订单")}
+                        </a>
+                        #{/if}
+                    </div>
+                </li>
+
+                <li class="uc-has-sub">
+                    <a class="uc-nav__item" href="javascript:;">
+                        <span class="material-icons-outlined">account_balance_wallet</span>#{t("财务")}
+                        <span class="material-icons-outlined uc-caret">expand_more</span>
+                    </a>
+                    <div class="uc-submenu">
+                        <a class="uc-subitem" href="/user/recharge/index" data-match="/user/recharge/index">
+                            <span class="material-icons-outlined">add_card</span>#{t("充值中心")}
+                        </a>
+                        <a class="uc-subitem" href="/user/cash/index" data-match="/user/cash/index">
+                            <span class="material-icons-outlined">paid</span>#{t("硬币兑现")}
+                        </a>
+                        <a class="uc-subitem" href="/user/personal/purchaseRecord" data-match="/user/personal/purchaseRecord">
+                            <span class="material-icons-outlined">shopping_bag</span>#{t("购买记录")}
+                        </a>
+                        <a class="uc-subitem" href="/user/bill/index" data-match="/user/bill/index">
+                            <span class="material-icons-outlined">description</span>#{t("我的账单")}
+                        </a>
+                    </div>
+                </li>
+
+                <li class="uc-has-sub">
+                    <a class="uc-nav__item" href="javascript:;">
+                        <span class="material-icons-outlined">campaign</span>#{t("推广")}
+                        <span class="material-icons-outlined uc-caret">expand_more</span>
+                    </a>
+                    <div class="uc-submenu">
+                        <a class="uc-subitem" href="/user/agent/promote" data-match="/user/agent/promote">
+                            <span class="material-icons-outlined">share</span>#{t("推广中心")}
+                        </a>
+                        <a class="uc-subitem" href="/user/agent/member" data-match="/user/agent/member">
+                            <span class="material-icons-outlined">groups</span>#{t("我的下级")}
+                        </a>
+                    </div>
+                </li>
+
+                <!--start::HOOK-->
+                #{hook(\App\Consts\Hook::USER_VIEW_MENU)}
+                <!--end::HOOK-->
+            </ul>
+
+            <div class="uc-nav__right">
+                <a class="uc-nav__link" href="/" data-pika-full-navigation>
+                    <span class="material-icons-outlined">shopping_cart</span>#{t("购买商品")}
+                </a>
+                <a class="uc-nav__link uc-ticket-nav-link" href="/user/ticket/index" data-match="/user/ticket">
+                    <span class="material-icons-outlined">support_agent</span>#{t("我的工单")}
+                    <span class="uc-ticket-nav-badge is-empty" aria-label="#{t('未读工单消息')}">0</span>
+                </a>
+                <div class="uc-message-center">
+                    <button class="uc-message-btn" type="button" title="#{t('消息通知')}" aria-label="#{t('没有未读消息')}" aria-expanded="false" aria-controls="uc-message-dropdown">
+                        <span class="material-icons-outlined uc-message-btn__icon">notifications_none</span>
+                        <span class="uc-message-badge is-empty" aria-hidden="true">0</span>
+                    </button>
+                    <div class="uc-message-dropdown" id="uc-message-dropdown" role="dialog" aria-label="#{t('最近消息')}">
+                        <div class="uc-message-dropdown__head">
+                            <span><span class="material-icons-outlined">notifications_active</span>#{t("消息通知")}</span>
+                            <em class="uc-message-dropdown__count">#{t("暂无未读")}</em>
+                        </div>
+                        <div class="uc-message-recent" aria-live="polite">
+                            <div class="uc-message-recent__loading"><i></i><i></i><i></i></div>
+                        </div>
+                        <a class="uc-message-dropdown__all" href="/user/message/index" data-match="/user/message">
+                            <span>#{t("查看全部消息")}</span><span class="material-icons-outlined">arrow_forward</span>
+                        </a>
+                    </div>
+                </div>
+                <div class="uc-user">
+                    <button class="uc-user__btn" type="button">
+                        <span class="uc-user__lv"><img
+                                    class="uc-user__group-icon pika-user-badge"
+                                    src="/app/View/User/Theme/Pika/Assets/topfans-logo.png"
+                                    alt="">#{$user.username|escape:'html'}</span>
+                        <img class="uc-user__avatar pika-user-avatar#{if !$user.avatar || $user.avatar == '/favicon.ico'} pika-user-avatar--brand#{/if}"
+                             src="#{if !$user.avatar || $user.avatar == '/favicon.ico'}/app/View/User/Theme/Pika/Assets/topfans-logo.png#{else}#{$user.avatar|escape:'html'}#{/if}"
+                             alt="#{t('用户头像')|escape:'html'}">
+                    </button>
+                    <div class="uc-submenu">
+                        <a class="uc-subitem" href="/user/security/personal">
+                            <span class="material-icons-outlined">badge</span>#{t("个人资料")}
+                        </a>
+                        <a class="uc-subitem" href="/user/security/password">
+                            <span class="material-icons-outlined">password</span>#{t("修改密码")}
+                        </a>
+                        <div class="uc-submenu__sep"></div>
+                        <a class="uc-subitem logout" href="javascript:void(0);">
+                            <span class="material-icons-outlined">logout</span>#{t("安全注销")}
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <button class="uc-burger" type="button" aria-label="menu">
+                <span class="material-icons-outlined">menu</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- ===== 移动抽屉(镜像顶部菜单) ===== -->
+    <div class="uc-drawer">
+        <a class="uc-brand" href="/" data-pika-full-navigation style="padding:4px 8px 16px;">
+            <img class="uc-brand__logo" src="/app/View/User/Theme/Pika/Assets/topfans-logo.png" alt="Pika Logo">
+            <span class="uc-brand__name" style="display:inline">#{$config.shop_name|escape:'html'}</span>
+        </a>
+        <div class="uc-drawer__group">
+            <a class="uc-drawer__link" href="/user/dashboard/index" data-match="/user/dashboard/index"><span class="material-icons-outlined">space_dashboard</span>#{t("我的主页")}</a>
+        </div>
+        <div class="uc-drawer__group">
+            <div class="uc-drawer__gtitle">#{t("店铺")}</div>
+            <a class="uc-drawer__link" href="/user/business/index" data-match="/user/business/index"><span class="material-icons-outlined">store</span>#{t("我的店铺")}</a>
+            #{if $user.businessLevel and $user.businessLevel.supplier == 1}
+            <a class="uc-drawer__link" href="/user/category/index" data-match="/user/category/index"><span class="material-icons-outlined">category</span>#{t("商品分类")}</a>
+            <a class="uc-drawer__link" href="/user/commodity/index" data-match="/user/commodity/index"><span class="material-icons-outlined">inventory_2</span>#{t("我的商品")}</a>
+            <a class="uc-drawer__link" href="/user/card/index" data-match="/user/card/index"><span class="material-icons-outlined">vpn_key</span>#{t("卡密管理")}</a>
+            <a class="uc-drawer__link" href="/user/coupon/index" data-match="/user/coupon/index"><span class="material-icons-outlined">local_offer</span>#{t("代卷管理")}</a>
+            <a class="uc-drawer__link" href="/user/order/index" data-match="/user/order/index"><span class="material-icons-outlined">receipt_long</span>#{t("商品订单")}</a>
+            #{/if}
+        </div>
+        <div class="uc-drawer__group">
+            <div class="uc-drawer__gtitle">#{t("财务")}</div>
+            <a class="uc-drawer__link" href="/user/recharge/index" data-match="/user/recharge/index"><span class="material-icons-outlined">add_card</span>#{t("充值中心")}</a>
+            <a class="uc-drawer__link" href="/user/cash/index" data-match="/user/cash/index"><span class="material-icons-outlined">paid</span>#{t("硬币兑现")}</a>
+            <a class="uc-drawer__link" href="/user/personal/purchaseRecord" data-match="/user/personal/purchaseRecord"><span class="material-icons-outlined">shopping_bag</span>#{t("购买记录")}</a>
+            <a class="uc-drawer__link" href="/user/bill/index" data-match="/user/bill/index"><span class="material-icons-outlined">description</span>#{t("我的账单")}</a>
+        </div>
+        <div class="uc-drawer__group">
+            <div class="uc-drawer__gtitle">#{t("推广")}</div>
+            <a class="uc-drawer__link" href="/user/agent/promote" data-match="/user/agent/promote"><span class="material-icons-outlined">share</span>#{t("推广中心")}</a>
+            <a class="uc-drawer__link" href="/user/agent/member" data-match="/user/agent/member"><span class="material-icons-outlined">groups</span>#{t("我的下级")}</a>
+        </div>
+        <div class="uc-drawer__group">
+            <a class="uc-drawer__link" href="/user/security/personal" data-match="/user/security/personal"><span class="material-icons-outlined">badge</span>#{t("个人资料")}</a>
+            <a class="uc-drawer__link" href="/user/security/password" data-match="/user/security/password"><span class="material-icons-outlined">password</span>#{t("修改密码")}</a>
+            <a class="uc-drawer__link" href="/" data-pika-full-navigation><span class="material-icons-outlined">shopping_cart</span>#{t("购买商品")}</a>
+            <a class="uc-drawer__link uc-ticket-nav-link" href="/user/ticket/index" data-match="/user/ticket"><span class="material-icons-outlined">support_agent</span>#{t("我的工单")}<span class="uc-ticket-nav-badge is-empty" aria-label="#{t('未读工单消息')}">0</span></a>
+            <a class="uc-drawer__link" href="/user/message/index" data-match="/user/message"><span class="material-icons-outlined">notifications</span>#{t("消息中心")}<span class="uc-message-drawer-badge is-empty" aria-label="#{t('未读消息')}">0</span></a>
+            <a class="uc-drawer__link logout" href="javascript:void(0);"><span class="material-icons-outlined">logout</span>#{t("安全注销")}</a>
+        </div>
+    </div>
+    <div class="uc-drawer__shade"></div>
+
+    <div id="pjax-container">

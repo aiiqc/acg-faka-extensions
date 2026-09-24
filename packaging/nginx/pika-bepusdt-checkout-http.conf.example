@@ -1,0 +1,4 @@
+# Load this file from nginx's http {} context exactly once per host.
+# The zones are intentionally small because they store only client-IP counters.
+limit_req_zone $binary_remote_addr zone=pika_bepusdt_checkout:1m rate=30r/m;
+limit_conn_zone $binary_remote_addr zone=pika_bepusdt_checkout_conn:1m;

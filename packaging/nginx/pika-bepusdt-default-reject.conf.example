@@ -1,0 +1,21 @@
+# Load one equivalent server on every public host before enabling a merchant
+# site. Replace the certificate paths with a certificate Nginx can read. If the
+# host already has an exact default TLS reject server, do not create a duplicate.
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+
+    ssl_certificate __DEFAULT_REJECT_CERTIFICATE__;
+    ssl_certificate_key __DEFAULT_REJECT_CERTIFICATE_KEY__;
+    ssl_reject_handshake on;
+    return 444;
+}

@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "${1:-}" == '-r' && "${2:-}" == *PHP_VERSION_ID* ]]; then
+    printf '80030'
+    exit 0
+fi
+if [[ "${1:-}" == '-r' && "${2:-}" == *PHP_VERSION* ]]; then
+    printf '8.0.30'
+    exit 0
+fi
+
+exec /usr/local/bin/php "$@"

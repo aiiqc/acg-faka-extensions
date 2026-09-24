@@ -1,0 +1,47 @@
+#{include file="./Header.html"}
+<main class="container py-4 fbfaka-storefront">
+  <h1 class="fbfaka-store-title">#{if $config.title != ''}#{$config.title|escape:'html'}#{else}#{$config.shop_name|escape:'html'}#{/if}</h1>
+  <section class="panel fbfaka-notice">
+    <div class="panel-header">
+      <span class="icon"><i class="fa-duotone fa-regular fa-bullhorn"></i></span>
+      <h6 class="panel-title">#{t("最新公告")}</h6>
+    </div>
+    <div class="panel-body">
+        #{lang($config.notice)}
+    </div>
+  </section>
+
+  <div class="fbfaka-catalog">
+    <aside class="panel fbfaka-categories">
+      <div class="panel-header">
+        <span class="icon"><i class="fa-duotone fa-regular fa-folder-open"></i></span>
+        <h6 class="panel-title">#{t("商品分类")}</h6>
+      </div>
+      <div class="panel-body">
+        <div class="fbfaka-category-list" role="navigation" aria-label="#{t('商品分类')}">
+            #{foreach $category as $cate}
+                #{include file="./CategoryNode.html" cate=$cate categoryId=$categoryId inheritedCategoryIcon=''}
+            #{/foreach}
+        </div>
+      </div>
+    </aside>
+
+    <section class="fbfaka-products">
+      <div class="row item-list fbfaka-item-list" aria-live="polite" aria-busy="true">
+          <div class="item-message">#{t("努力加载中..")}</div>
+      </div>
+    </section>
+  </div>
+  <section class="panel fbfaka-rules" id="fbfaka-rules">
+    <div class="panel-header">
+      <span class="icon"><i class="fa-duotone fa-regular fa-shield-check"></i></span>
+      <h6 class="panel-title">#{t("用户规则")}</h6>
+    </div>
+    <div class="panel-body">
+      <p>#{t("购买前请确认商品说明、交付方式与售后时限。本站商品仅限合法用途，禁止用于侵犯他人权益或违反所在地法律的活动。")}</p>
+      <p class="mb-0">#{t("需要售后协助时，请保留订单号并通过站内工单联系；请勿在公开页面张贴卡密、密码或付款资料。")}</p>
+    </div>
+  </section>
+</main>
+#{ready("/app/View/User/Theme/Pika/Assets/index.js?pika=1.1.6&rev=20260914")}
+#{include file="./Footer.html"}

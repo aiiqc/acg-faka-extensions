@@ -1,0 +1,36 @@
+# Managed by Pika LocalExtensions scheduler.sh
+# Pika-Instance: @@PIKA_INSTANCE@@
+# Pika-SiteRoot: @@PIKA_SITE_ROOT_RAW@@
+# Pika-WebUser: @@PIKA_WEB_USER@@
+[Unit]
+Description=Pika SupplySync for @@PIKA_INSTANCE@@
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@@PIKA_WEB_USER@@
+Group=@@PIKA_WEB_GROUP@@
+WorkingDirectory=@@PIKA_SITE_ROOT_SCALAR@@
+ExecStart=@@PIKA_SCHEDULER_Q@@ run-sync @@PIKA_SITE_ROOT_ARG_Q@@ @@PIKA_WEB_USER_ARG_Q@@ @@PIKA_CONFIG_DEV_ARG_Q@@ @@PIKA_CONFIG_INODE_ARG_Q@@ @@PIKA_PHP_ARG_Q@@
+UMask=0027
+TimeoutStartSec=8min
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectHome=read-only
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+ReadWritePaths=@@PIKA_RUNTIME_Q@@ @@PIKA_IMAGE_CACHE_Q@@ @@PIKA_SITE_CONFIG_Q@@

@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+
+for argument in "$@"; do
+    if [[ "$argument" == */scripts/write-receipt.php ]]; then
+        printf 'INJECTED_WRITE_RECEIPT_FAILURE\n' >&2
+        exit 79
+    fi
+done
+
+exec /usr/local/bin/php "$@"
