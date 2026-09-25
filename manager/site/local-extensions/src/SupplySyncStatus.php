@@ -12,6 +12,7 @@ final class SupplySyncStatus
     private const ERROR_MESSAGES = [
         '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理',
         '图片未刷新：已保留原图，其他字段仍按有效开关和安全门处理',
+        '图片配额已耗尽：保留原图，其他有效字段继续按时间和文本预算处理',
         '单货源预算已耗尽', '本轮预算已耗尽', '远端返回业务失败', '远端凭据验证失败',
         '远端商品不可用', '远端商品详情无效', '远端 HTTPS 请求失败', '同步失败，原因未分类',
         '货源同步失败，未执行商品写入',
@@ -169,6 +170,7 @@ final class SupplySyncStatus
             'catalog_unknown' => $unknown['catalog_unknown'],
             'planned_held_unknown' => $unknown['planned_held_unknown'],
             'failed' => $failed, 'selection_held' => $held,
+            'field_sync' => $origin === 'log' ? self::fieldSync($entry['field_sync'] ?? null) : null,
             'phase' => in_array($entry['phase'] ?? null, ['preflight', 'catalog', 'planning', 'actions'], true)
                 ? $entry['phase'] : null,
             'catalog_diagnostic' => $entry['status'] === 'error'
@@ -176,6 +178,20 @@ final class SupplySyncStatus
             'failure_diagnostic' => self::diagnostic($entry['failure_diagnostic'] ?? null),
             'request_diagnostics' => self::requests($entry['request_diagnostics'] ?? null),
             'mass_zero_fuse' => ($entry['mass_zero_fuse'] ?? null) === true] + self::errors($entry);
+    }
+
+    private static function fieldSync(mixed $value): ?array
+    {
+        if (!is_array($value) || array_is_list($value)) return null;
+        $safe = [];
+        foreach (['trade_planned', 'noncover_saved', 'media_planned', 'media_attempted',
+            'media_refreshed', 'media_failed', 'media_deferred'] as $key) {
+            $number = $value[$key] ?? null;
+            $safe[$key] = is_int($number) && $number >= 0 && $number <= 500 ? $number : null;
+        }
+        $safe['image_quota_scope'] = in_array($value['image_quota_scope'] ?? null, ['none', 'source', 'round'], true)
+            ? $value['image_quota_scope'] : null;
+        return $safe;
     }
 
     /** Independent fixed projection: Supply may be disabled and its autoloader absent. */

@@ -9,6 +9,7 @@ final class CatalogPlanner
 {
     private const MAX_GROUPS = 200;
     private const MAX_ITEMS = 10000;
+    private const OPPORTUNITIES = ['priority', 'priority', 'priority', 'normal', 'media'];
 
     /**
      * @return array<string, array{code:string,name:string,category:string,stock:?int,item:array}>
@@ -54,8 +55,9 @@ final class CatalogPlanner
 
     /**
      * @param array<string, array{code:string,name:string,category:string,stock:?int,item:array}> $catalog
-     * @param array<string, array{id:int,status:int,stock:int,managed?:bool,inventory_sync?:int}> $local
-     * @return array{actions:array<int,array{type:string,code:string,lane:string}>,next_cursor:string,next_priority_cursor:string,counts:array<string,int>,fuse:bool,fuse_ratio:float}
+     * @param array<string, array{id:int,status:int,stock:int,managed?:bool,inventory_sync?:int,shared_amount_sync?:int,shared_config_sync?:int}> $local
+     * @param ?array{media_cursor:string,next_slot:int} $schedule
+     * @return array{actions:array<int,array{type:string,code:string,lane:string,next_slot?:int}>,next_cursor:string,next_priority_cursor:string,counts:array<string,int>,fuse:bool,fuse_ratio:float,trade_planned?:int,media_planned?:int}
      */
     public function plan(
         array $catalog,
@@ -64,6 +66,7 @@ final class CatalogPlanner
         Options $options,
         string $priorityCursor = '',
         array $targetCodes = [],
+        ?array $schedule = null,
     ): array
     {
         if ($catalog === []) {
@@ -132,6 +135,10 @@ final class CatalogPlanner
             }
         }
         sort($priority, SORT_STRING);
+        if ($options->mode === Options::MODE_BASIC && $targetCodes === [] && $schedule !== null) {
+            return $this->scheduledPlan($catalog, $local, $work, $priority, $cursor, $options,
+                $priorityCursor, $schedule, $fuse, $explicitZeroFuse, $ratio);
+        }
         $priorityLimit = $targetCodes === [] && $options->batchLimit > 3
             ? max(1, (int)floor($options->batchLimit * 0.75))
             : 0;
@@ -159,31 +166,8 @@ final class CatalogPlanner
         foreach ($selected as $code) {
             $remote = $catalog[$code] ?? null;
             $row = $local[$code] ?? null;
-            if ($row !== null && !($row['managed'] ?? true)) {
-                continue;
-            }
-            if ($remote !== null && $remote['stock'] === null) {
-                $type = 'held_unknown';
-            } elseif ($row === null) {
-                if ($options->mode === Options::MODE_FULL && $remote !== null) {
-                    $type = (int)$remote['stock'] > 0 ? 'import' : 'hold_zero';
-                } else {
-                    continue;
-                }
-            } elseif ($remote === null || $remote['stock'] <= 0) {
-                if ((int)($row['inventory_sync'] ?? 1) !== 1) {
-                    if ($remote === null) {
-                        continue;
-                    }
-                    $type = 'sync';
-                } elseif (($remote === null ? $fuse : $explicitZeroFuse) && (int)$row['stock'] > 0) {
-                    $type = 'hold_zero';
-                } else {
-                    $type = 'zero';
-                }
-            } else {
-                $type = 'sync';
-            }
+            $type = $this->actionType($remote, $row, $options, $fuse, $explicitZeroFuse);
+            if ($type === null) continue;
             $counts[$type]++;
             $actions[] = [
                 'type' => $type,
@@ -205,6 +189,102 @@ final class CatalogPlanner
             'fuse' => $fuse,
             'fuse_ratio' => round($ratio, 2),
         ];
+    }
+
+    private function scheduledPlan(array $catalog, array $local, array $work, array $priority,
+        string $cursor, Options $options, string $priorityCursor, array $schedule,
+        bool $fuse, bool $explicitZeroFuse, float $ratio): array
+    {
+        $priorityMap = $options->batchLimit > 3 ? array_fill_keys($priority, true) : [];
+        $lanes = ['priority' => [], 'normal' => [], 'media' => []];
+        $types = [];
+        foreach ($work as $code) {
+            $row = $local[$code] ?? null;
+            $type = $this->actionType($catalog[$code] ?? null, $row, $options, $fuse, $explicitZeroFuse);
+            if ($row === null || $type === null) continue;
+            $types[$code] = $type;
+            // A cover-only item needs one media action, without a second detail
+            // request or housekeeping write through the ordinary rotation.
+            if ($type !== 'sync' || $this->hasNonCoverField($row, $options)) {
+                $lanes[isset($priorityMap[$code]) ? 'priority' : 'normal'][] = $code;
+            }
+            // Media gets its own pass even when this code also needs stock work.
+            // Reuse the action classification so unknown/zero holds stay closed.
+            if ($type === 'sync' && $options->syncs('cover') && (int)($row['shared_config_sync'] ?? 0) === 1) {
+                $lanes['media'][] = $code;
+            }
+        }
+        $mediaCursor = is_string($schedule['media_cursor'] ?? null) ? $schedule['media_cursor'] : '';
+        $lanes['priority'] = $this->batch($lanes['priority'], $priorityCursor, $options->batchLimit);
+        $lanes['normal'] = $this->batch($lanes['normal'], $cursor, $options->batchLimit);
+        $lanes['media'] = $this->batch($lanes['media'], $mediaCursor, $options->batchLimit);
+        $offsets = ['priority' => 0, 'normal' => 0, 'media' => 0];
+        $slot = is_int($schedule['next_slot'] ?? null)
+            && $schedule['next_slot'] >= 0 && $schedule['next_slot'] < count(self::OPPORTUNITIES)
+            ? $schedule['next_slot'] : 0;
+        $actions = [];
+        $counts = ['sync' => 0, 'import' => 0, 'zero' => 0, 'hold_zero' => 0, 'held_unknown' => 0];
+        $tradePlanned = 0;
+        $mediaPlanned = 0;
+        while (count($actions) < $options->batchLimit) {
+            $selected = false;
+            // Skip exhausted or disabled lanes at most once around the ring.
+            // Each lane was sliced once; its tail cannot wrap to fill this run.
+            for ($skipped = 0; $skipped < count(self::OPPORTUNITIES); $skipped++) {
+                $lane = self::OPPORTUNITIES[$slot];
+                $slot = ($slot + 1) % count(self::OPPORTUNITIES);
+                if (!isset($lanes[$lane][$offsets[$lane]])) continue;
+                $code = $lanes[$lane][$offsets[$lane]++];
+                $type = $types[$code];
+                $actions[] = ['type' => $type, 'code' => $code, 'lane' => $lane, 'next_slot' => $slot];
+                $counts[$type]++;
+                if ($lane === 'media') {
+                    $mediaPlanned++;
+                } else {
+                    $tradePlanned++;
+                    if ($lane === 'priority') $priorityCursor = $code;
+                    else $cursor = $code;
+                }
+                $selected = true;
+                break;
+            }
+            if (!$selected) break;
+        }
+        return [
+            'actions' => $actions,
+            'next_cursor' => $cursor,
+            'next_priority_cursor' => $priorityCursor,
+            'counts' => $counts,
+            'fuse' => $fuse,
+            'fuse_ratio' => round($ratio, 2),
+            'trade_planned' => $tradePlanned,
+            'media_planned' => $mediaPlanned,
+        ];
+    }
+
+    private function hasNonCoverField(array $row, Options $options): bool
+    {
+        return ((int)($row['shared_amount_sync'] ?? 0) === 1 && $options->syncs('price'))
+            || ((int)($row['inventory_sync'] ?? 1) === 1 && $options->syncs('inventory'))
+            || ((int)($row['shared_config_sync'] ?? 0) === 1
+                && ($options->syncs('name') || $options->syncs('description') || $options->syncs('options')));
+    }
+
+    private function actionType(?array $remote, ?array $row, Options $options,
+        bool $fuse, bool $explicitZeroFuse): ?string
+    {
+        if ($row !== null && !($row['managed'] ?? true)) return null;
+        if ($remote !== null && $remote['stock'] === null) return 'held_unknown';
+        if ($row === null) {
+            return $options->mode === Options::MODE_FULL && $remote !== null
+                ? ((int)$remote['stock'] > 0 ? 'import' : 'hold_zero') : null;
+        }
+        if ($remote === null || $remote['stock'] <= 0) {
+            if ((int)($row['inventory_sync'] ?? 1) !== 1) return $remote === null ? null : 'sync';
+            return ($remote === null ? $fuse : $explicitZeroFuse) && (int)$row['stock'] > 0
+                ? 'hold_zero' : 'zero';
+        }
+        return 'sync';
     }
 
     public static function isManualNullStock(array $item): bool

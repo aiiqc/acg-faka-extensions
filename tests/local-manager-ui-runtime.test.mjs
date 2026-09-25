@@ -189,3 +189,53 @@ test('manager UI keeps old failure counts when item details or timing evidence i
   assert.match(text, /未取得逐项诊断，不能从失败数推断原因/);
   assert.doesNotMatch(text, /诊断事件总数 0|DNS 0|HTTP 0/);
 });
+
+test('manager UI distinguishes saved noncover products, media actions and image quota scopes', { timeout: 1000 }, async () => {
+  const fieldSync = { trade_planned: 4, noncover_saved: 5, media_planned: 3, media_attempted: 2,
+    media_refreshed: 1, media_failed: 1, media_deferred: 1, image_quota_scope: 'source' };
+  for (const [scope, label] of [['none', '本批未触发限制'], ['source', '本货源媒体受限'], ['round', '本轮媒体受限']]) {
+    const text = await renderedStatus(statusEntry({ status: 'partial', field_sync: { ...fieldSync, image_quota_scope: scope },
+      error_total: 1, errors: [{ message: '图片配额已耗尽：保留原图，其他有效字段继续按时间和文本预算处理' }] }));
+    assert.match(text, /部分完成/);
+    assert.match(text, /常规计划动作 4；非图片保存 5；媒体已复查 2／3；已刷新 1；失败 1；未完成 1/);
+    assert.match(text, new RegExp(`图片配额影响：${label}`));
+    assert.match(text, /常规与媒体计划动作可重叠同一商品/);
+    assert.match(text, /非图片保存按不同商品计数/);
+    assert.match(text, /可能来自媒体首次详情，不代表价格、库存、规格全部成功/);
+    assert.match(text, /媒体刷新也不代表六项字段全部成功/);
+    assert.match(text, /未完成仅指本批已选媒体/);
+    assert.match(text, /不是全目录积压，也未建立补查任务/);
+    assert.match(text, /图片配额不等于时间预算耗尽/);
+    assert.match(text, /记录不代表完整覆盖或时限保证/);
+    assert.match(text, /图片配额已耗尽：保留原图，其他有效字段继续按时间和文本预算处理/);
+  }
+});
+
+test('manager UI keeps unavailable field evidence unknown and bounds each observation', { timeout: 1000 }, async () => {
+  for (const fieldSync of [undefined, null, 'secret-sentinel', [], false]) {
+    const text = await renderedStatus(statusEntry({ field_sync: fieldSync }));
+    assert.match(text, /字段分层：未记录；非图片保存与媒体复查结果未知/);
+    assert.doesNotMatch(text, /非图片保存 0|媒体已复查 0|secret-sentinel/);
+  }
+  const text = await renderedStatus(statusEntry({ field_sync: { trade_planned: 501, noncover_saved: '5',
+    media_planned: 500, media_attempted: -1, media_refreshed: true, media_failed: 0.5,
+    media_deferred: null, image_quota_scope: 'secret-sentinel', secret: 'secret-sentinel' } }));
+  assert.match(text, /常规计划动作 未知；非图片保存 未知；媒体已复查 未知／500；已刷新 未知；失败 未知；未完成 未知/);
+  assert.match(text, /图片配额影响：未知/);
+  assert.doesNotMatch(text, /secret-sentinel/);
+});
+
+test('manager UI preserves error, all-disabled and preview outcomes with field observations', { timeout: 1000 }, async () => {
+  const fieldSync = { trade_planned: 0, noncover_saved: 0, media_planned: 0, media_attempted: 0,
+    media_refreshed: 0, media_failed: 0, media_deferred: 0, image_quota_scope: 'none' };
+  const failed = await renderedStatus(statusEntry({ status: 'error', field_sync: fieldSync }));
+  assert.match(failed, /本轮失败/);
+  assert.doesNotMatch(failed, /部分完成|批次完成/);
+  const disabled = await renderedStatus(statusEntry({ planned: 0, field_sync: fieldSync,
+    applied: { sync: 0, import: 0, zero: 0, held_race: 0, held_unknown: 0 } }));
+  assert.match(disabled, /本批无动作，不代表全部商品已同步/);
+  const preview = await renderedStatus(statusEntry({ kind: 'preview', field_sync: { ...fieldSync,
+    media_planned: 2, media_deferred: 2 } }), 'preview');
+  assert.match(preview, /最近只读预演记录（不写商品）：批次完成/);
+  assert.match(preview, /媒体已复查 0／2；已刷新 0；失败 0；未完成 2/);
+});

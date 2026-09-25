@@ -77,6 +77,30 @@ test('checkpoints and commits each lane only through its last completed action',
     assert.match(sync, /\$persistedPriorityCursor\s*=\s*\$budgetExhausted[\s\S]+\$completedPriorityCursor[\s\S]+\$plan\['next_priority_cursor'\]/);
 });
 
+test('limits the independent media pass to the scheduled basic path and existing writable gates', () => {
+    const planner = service('CatalogPlanner.php');
+    const scheduled = planner.slice(planner.indexOf('private function scheduledPlan('),
+        planner.indexOf('private function hasNonCoverField('));
+    const nonCover = planner.slice(planner.indexOf('private function hasNonCoverField('),
+        planner.indexOf('private function actionType('));
+
+    assert.match(planner, /\?array \$schedule = null/);
+    assert.match(planner, /\$options->mode === Options::MODE_BASIC && \$targetCodes === \[\] && \$schedule !== null/);
+    assert.match(planner, /OPPORTUNITIES = \['priority', 'priority', 'priority', 'normal', 'media'\]/);
+    assert.match(scheduled, /\$this->actionType\(/);
+    assert.match(scheduled, /\$type === 'sync' && \$options->syncs\('cover'\) && \(int\)\(\$row\['shared_config_sync'\] \?\? 0\) === 1/);
+    assert.match(scheduled, /\$options->batchLimit > 3 \? array_fill_keys\(\$priority, true\) : \[\]/);
+    assert.match(scheduled, /while \(count\(\$actions\) < \$options->batchLimit\)/);
+    assert.match(scheduled, /\$skipped < count\(self::OPPORTUNITIES\)/);
+    assert.match(scheduled, /'next_slot' => \$slot/);
+    assert.match(scheduled, /\$counts\[\$type\]\+\+/);
+    assert.doesNotMatch(scheduled, /\$counts\['media'\]|next_media_cursor/);
+    assert.match(nonCover, /shared_amount_sync[\s\S]+syncs\('price'\)/);
+    assert.match(nonCover, /inventory_sync[\s\S]+syncs\('inventory'\)/);
+    assert.match(nonCover, /shared_config_sync[\s\S]+syncs\('name'\)[\s\S]+syncs\('description'\)[\s\S]+syncs\('options'\)/);
+    assert.doesNotMatch(nonCover, /syncs\('cover'\)/);
+});
+
 test('fails malformed V4 stock closed and does not hide budget or cache integrity failures', () => {
     const gateway = service('SharedGateway.php');
     const image = service('ImageCache.php');

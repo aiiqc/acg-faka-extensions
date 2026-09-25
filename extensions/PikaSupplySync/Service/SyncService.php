@@ -22,6 +22,7 @@ final class SyncService
     /** @var array<string,mixed> */
     private array $logContext = [];
     private string $phase = 'preflight';
+    private bool $roundMediaBlocked = false;
     /** @var (\Closure(): Options)|null */
     private ?\Closure $targetOptionsReader = null;
 
@@ -72,6 +73,7 @@ final class SyncService
         }
         $this->targetOptionsReader = $targetHashes === null ? null : \Closure::fromCallable($targetOptionsReader);
         $this->images->beginRun();
+        $this->roundMediaBlocked = false;
         $this->logContext = ['mode' => $options->mode, 'dry_run' => $options->dryRun];
         if ($targetHashes !== null) $this->logContext += ['targeted' => true, 'target_code_hashes' => $targetHashes];
         $sourceIds = $options->sourceIds;
@@ -209,6 +211,10 @@ final class SyncService
             try {
                 $stateStore = new StateStore();
                 $state = $stateStore->read($sourceId);
+                $scheduled = $options->mode === Options::MODE_BASIC && $targetHashes === null;
+                $schedule = $scheduled
+                    ? $stateStore->readSchedule($sourceId, $state, SourceIdentity::fingerprint($source))
+                    : null;
                 $local = $this->localMap($sourceId);
                 $targets = $targetHashes === null ? [] : $this->targetRows($sourceId, $targetHashes, $local, $catalog);
                 if (!$options->syncs('inventory')) {
@@ -222,6 +228,7 @@ final class SyncService
                     $options,
                     (string)$state['priority_cursor'],
                     array_keys($targets),
+                    $schedule,
                 );
                 if ($targetHashes !== null && ($plan['fuse'] || $plan['counts'] !== [
                     'sync' => count($targets), 'import' => 0, 'zero' => 0, 'hold_zero' => 0, 'held_unknown' => 0,
@@ -266,6 +273,15 @@ final class SyncService
             ];
             if ($targetHashes !== null) $result += ['targeted' => true, 'target_code_hashes' => $targetHashes,
                 'verified_code_hashes' => []];
+            if ($scheduled) {
+                $result['field_sync'] = [
+                    'trade_planned' => $plan['trade_planned'], 'noncover_saved' => 0,
+                    'media_planned' => $plan['media_planned'], 'media_attempted' => 0,
+                    'media_refreshed' => 0, 'media_failed' => 0,
+                    'media_deferred' => $plan['media_planned'],
+                    'image_quota_scope' => $this->roundMediaBlocked ? 'round' : 'none',
+                ];
+            }
 
             if ($options->dryRun) {
                 $this->log($result);
@@ -279,18 +295,36 @@ final class SyncService
             $budgetExhausted = false;
             $completedCursor = (string)$state['cursor'];
             $completedPriorityCursor = (string)$state['priority_cursor'];
+            $sourceMediaBlocked = false;
+            // Only validated, bounded values live here, never raw responses or persisted URLs.
+            $prepared = [];
+            $appliedCodes = [];
+            $failedCodes = [];
+            $heldCodes = [];
+            $selectionHeldCodes = [];
 
             $this->phase = 'actions';
             foreach ($plan['actions'] as $action) {
                 $type = $action['type'];
                 $code = $action['code'];
                 $lane = $action['lane'] ?? null;
-                if (!in_array($lane, ['normal', 'priority'], true)) {
+                if (!in_array($lane, $scheduled ? ['normal', 'priority', 'media'] : ['normal', 'priority'], true)) {
                     throw new RuntimeException('同步计划游标通道不正确');
                 }
+                if ($lane === 'media' && ($sourceMediaBlocked || $this->roundMediaBlocked)) continue;
                 $coverFailed = false;
+                $actionStarted = false;
+                $actionFailed = false;
                 try {
                     $this->budget->checkpoint();
+                    $actionStarted = true;
+                    if ($scheduled) {
+                        $schedule['next_slot'] = $action['next_slot'];
+                        if ($lane === 'media') {
+                            $schedule['media_cursor'] = $code;
+                            $result['field_sync']['media_attempted']++;
+                        }
+                    }
                     if ($type === 'hold_zero' || $type === 'held_unknown') {
                         if ($type === 'held_unknown') {
                             $result['applied']['held_unknown']++;
@@ -317,6 +351,39 @@ final class SyncService
                     } elseif ($type === 'zero') {
                         $this->zeroStock($source, $code, $options);
                         $result['applied']['zero']++;
+                    } elseif ($scheduled) {
+                        $wasSaved = ($prepared[$code]['noncover_applied'] ?? false) === true;
+                        $outcome = $this->syncExisting($source, $code, $remoteItem, $options, $coverFailed,
+                            null, $allowManualNullStock, true, $prepared[$code]);
+                        $savedNow = !$wasSaved && ($prepared[$code]['noncover_applied'] ?? false) === true;
+                        if ($savedNow) {
+                            $result['field_sync']['noncover_saved']++;
+                            if (!isset($appliedCodes[$code])) $result['applied']['sync']++;
+                            $appliedCodes[$code] = true;
+                        }
+                        if ($outcome === 'held_race' || $outcome === 'held_unknown') {
+                            if (!isset($heldCodes[$outcome][$code])) $result['applied'][$outcome]++;
+                            $heldCodes[$outcome][$code] = true;
+                        }
+                        if (in_array($outcome, ['partial_selection', 'held_selection'], true)) {
+                            if (!isset($failedCodes[$code])) $result['failed']++;
+                            $failedCodes[$code] = true;
+                            $actionFailed = true;
+                            if (!isset($selectionHeldCodes[$code])) {
+                                $this->recordError($result, $code,
+                                    '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理');
+                                $result['selection_held'] = ($result['selection_held'] ?? 0) + 1;
+                                $selectionHeldCodes[$code] = true;
+                            }
+                        }
+                        if ($lane === 'media' && !in_array($outcome, ['held_race', 'held_unknown'], true)
+                            && isset($prepared[$code]['item'])) {
+                            if ($this->refreshExistingCover($source, $code, $prepared[$code], $remoteItem, $options, $coverFailed)) {
+                                $result['field_sync']['media_refreshed']++;
+                                if (!isset($appliedCodes[$code])) $result['applied']['sync']++;
+                                $appliedCodes[$code] = true;
+                            }
+                        }
                     } else {
                         $outcome = $this->syncExisting($source, $code, $remoteItem, $options, $coverFailed,
                             $targets[$code] ?? null, $allowManualNullStock);
@@ -347,10 +414,20 @@ final class SyncService
                     }
                     if ($lane === 'priority') {
                         $completedPriorityCursor = $code;
-                    } else {
+                    } elseif ($lane === 'normal') {
                         $completedCursor = $code;
                     }
                 } catch (BudgetExceeded $exception) {
+                    if ($scheduled && $lane === 'media' && $actionStarted && $exception->isImageQuota()) {
+                        if ($exception->isSource()) $sourceMediaBlocked = true;
+                        else $this->roundMediaBlocked = true;
+                        $result['field_sync']['image_quota_scope'] = $exception->scope;
+                        $result['status'] = 'partial';
+                        $this->recordError($result, $code,
+                            '图片配额已耗尽：保留原图，其他有效字段继续按时间和文本预算处理',
+                            ['category' => 'budget', 'stage' => 'image']);
+                        continue;
+                    }
                     $budgetExhausted = true;
                     $result['status'] = 'partial';
                     $result['budget_scope'] = $exception->scope;
@@ -362,6 +439,9 @@ final class SyncService
                         $exception->safeDiagnostics ?? ['category' => 'budget']);
                     break;
                 } catch (\Throwable $exception) {
+                    if ($scheduled && $lane === 'media' && $actionStarted) $result['field_sync']['media_failed']++;
+                    $alreadyReported = $scheduled && ($prepared[$code]['error'] ?? null) === $exception
+                        && ($prepared[$code]['error_reported'] ?? false) === true;
                     unset($result['failure_diagnostic']);
                     if ($exception instanceof UpstreamFailure) {
                         $diagnostic = UpstreamFailure::sanitizeObservation($exception->diagnostics);
@@ -370,12 +450,24 @@ final class SyncService
                         $result['failure_diagnostic'] = ($diagnostic['stage'] ?? null) === 'image'
                             ? array_intersect_key($diagnostic, array_flip(['category', 'stage'])) : $diagnostic;
                     }
-                    $result['failed']++;
+                    if (!$actionFailed && (!$scheduled || !isset($failedCodes[$code]))) $result['failed']++;
+                    if ($scheduled) $failedCodes[$code] = true;
                     if ($coverFailed || $exception instanceof RemoteCoverUnavailable) $result['cover_failed']++;
-                    $this->recordError($result, $code, $this->errorMessage($exception),
-                        $result['failure_diagnostic'] ?? ['category' => 'unknown']);
+                    if (!$alreadyReported) {
+                        $this->recordError($result, $code, $this->errorMessage($exception),
+                            $result['failure_diagnostic'] ?? ['category' => 'unknown']);
+                        if ($scheduled && ($prepared[$code]['error'] ?? null) === $exception) {
+                            $prepared[$code]['error_reported'] = true;
+                        }
+                    }
                     if ($targetHashes !== null) break;
                 }
+            }
+
+            if ($scheduled) {
+                $result['field_sync']['media_deferred'] = $result['field_sync']['media_planned']
+                    - $result['field_sync']['media_refreshed'] - $result['field_sync']['media_failed'];
+                if ($result['field_sync']['media_deferred'] > 0) $result['status'] = 'partial';
             }
 
             if ($result['failed'] > 0 || $result['applied']['held_existing_unmanaged'] > 0
@@ -394,7 +486,7 @@ final class SyncService
             $result['next_cursor_hash'] = $persistedCursor === ''
                 ? ''
                 : substr(hash('sha256', $persistedCursor), 0, 12);
-            $stateStore->write($sourceId, [
+            $persistedState = [
                 // A budget can stop in the middle of either lane. Commit only
                 // each lane's last completed action; the triggering action and
                 // every unattempted suffix remain eligible on the next run.
@@ -412,7 +504,11 @@ final class SyncService
                     'failed' => $result['failed'],
                     'mass_zero_fuse' => $result['mass_zero_fuse'],
                 ],
-            ]);
+            ];
+            $stateStore->write($sourceId, $persistedState);
+            if ($scheduled) {
+                $stateStore->writeSchedule($sourceId, $persistedState, SourceIdentity::fingerprint($source), $schedule);
+            }
             $this->log($result);
             return $result;
         } finally {
@@ -497,7 +593,7 @@ final class SyncService
             ->limit(self::MAX_LOCAL_ITEMS + 1)
             ->get([
                 'id', 'code', 'shared_code', 'status', 'stock', 'shared_sync',
-                'shared_premium_type', 'inventory_sync',
+                'shared_premium_type', 'inventory_sync', 'shared_amount_sync', 'shared_config_sync',
             ]);
         if ($rows->count() > self::MAX_LOCAL_ITEMS) {
             throw new RuntimeException('本地同一货源商品超过 10000 条安全上限');
@@ -519,6 +615,8 @@ final class SyncService
                     && preg_match('/^PKS1[A-F0-9]{20}$/D', (string)$row->code) === 1
                     && in_array($premiumType, [PriceTemplate::TYPE_FIXED, PriceTemplate::TYPE_PERCENT], true),
                 'inventory_sync' => (int)$row->inventory_sync,
+                'shared_amount_sync' => (int)$row->shared_amount_sync,
+                'shared_config_sync' => (int)$row->shared_config_sync,
             ];
         }
         ksort($map, SORT_STRING);
@@ -563,8 +661,11 @@ final class SyncService
         bool &$coverFailed,
         ?array $target = null,
         bool $allowManualNullStock = false,
+        bool $deferCover = false,
+        ?array &$prepared = null,
     ): string
     {
+        if ($deferCover && isset($prepared['error'])) throw $prepared['error'];
         $existing = Commodity::query()
             ->where('owner', 0)
             ->where('shared_id', (int)$source->id)
@@ -574,6 +675,9 @@ final class SyncService
         if (!$existing) {
             throw new RuntimeException('本地商品不存在');
         }
+        if ($deferCover && isset($prepared['id']) && $prepared['id'] !== (int)$existing->id) {
+            throw new RuntimeException('本地商品身份在分层同步期间已变更');
+        }
         if ($target !== null) {
             $this->assertTargetUnchanged($existing, $target);
             $this->assertTargetAuthorization((int)$source->id, $target['target_count']);
@@ -581,133 +685,201 @@ final class SyncService
         if ($options->syncFields !== null && !$this->hasSelectedField($existing, $options)) {
             return 'skipped_selection';
         }
-        $this->sourcePolicy->assertSafe($source);
-        $remote = $this->gateway->item($source, $code);
-        // A native manual item may become unknown after the catalog snapshot.
-        // Hold before normalization can fetch a cover or prepare any field update.
-        if ($allowManualNullStock && CatalogPlanner::isManualNullStock($remote)) {
-            return 'held_unknown';
+        $coverAllowed = $options->syncs('cover') && (int)$existing->shared_config_sync === 1;
+        $coverLoaded = $coverAllowed && !$deferCover;
+        try {
+            if ($deferCover && isset($prepared['held_unknown'])) return 'held_unknown';
+            if ($deferCover && isset($prepared['item'])) {
+                $item = $prepared['item'];
+                $fullConfigValid = $prepared['full_config_valid'];
+                $coverAllowed = $prepared['cover_allowed'];
+            } else {
+                $this->sourcePolicy->assertSafe($source);
+                $remote = $this->gateway->item($source, $code);
+                // Hold the whole item before normalization or either write phase.
+                if ($allowManualNullStock && CatalogPlanner::isManualNullStock($remote)) {
+                    if ($deferCover) $prepared = ['id' => (int)$existing->id, 'held_unknown' => true];
+                    return 'held_unknown';
+                }
+                $remoteConfigSnapshot = $remote['config'] ?? [];
+                $fullConfigValid = is_array($remoteConfigSnapshot) && ConfigSelection::validFullSnapshot($remoteConfigSnapshot);
+                $coverValue = '';
+                $coverError = null;
+                if ($deferCover && $coverAllowed) {
+                    try { $coverValue = $normalizer->coverValue($remote['cover'] ?? ''); }
+                    catch (RemoteCoverUnavailable $exception) { $coverError = $exception; }
+                }
+                $item = $normalizer->normalize($source, $remote, $code, $coverLoaded, true);
+                if ($deferCover) {
+                    $prepared = ['id' => (int)$existing->id, 'item' => $item,
+                        'full_config_valid' => $fullConfigValid, 'cover_allowed' => $coverAllowed,
+                        'cover_value' => $coverValue, 'cover_error' => $coverError, 'noncover_applied' => false];
+                }
+            }
+        } catch (\Throwable $exception) {
+            if ($deferCover) $prepared = ['id' => (int)$existing->id, 'error' => $exception];
+            throw $exception;
         }
-        $remoteConfigSnapshot = $remote['config'] ?? [];
-        $fullConfigValid = is_array($remoteConfigSnapshot) && ConfigSelection::validFullSnapshot($remoteConfigSnapshot);
-        $coverLoaded = $options->syncs('cover') && (int)$existing->shared_config_sync === 1;
-        $item = $normalizer->normalize($source, $remote, $code, $coverLoaded, true);
         $coverFailed = ($item['cover_unavailable'] ?? false) === true;
         if ($target !== null && $coverFailed) throw new RuntimeException('定向商品图片未刷新，本件未写入');
 
-        return DB::transaction(function () use ($source, $code, $existing, $item, $options, $coverLoaded, $fullConfigValid, $target): string {
-            SourceIdentity::lockAndVerify($source);
-            $commodity = Commodity::query()
-                ->whereKey((int)$existing->id)
-                ->where('owner', 0)
-                ->where('shared_id', (int)$source->id)
-                ->where('shared_code', $code)
-                ->lockForUpdate()
-                ->first();
-            if (!$commodity) {
-                throw new RuntimeException('本地商品在同步期间已变更');
-            }
-            if ($target !== null) {
-                $this->assertTargetUnchanged($commodity, $target);
-                $this->assertTargetAuthorization((int)$source->id, $target['target_count']);
-                if ($options->syncFields !== array_fill_keys(Options::SYNC_FIELDS, true)
-                    || !$options->followsUpstreamConfig((int)$source->id)) {
-                    throw new RuntimeException('定向完整跟随授权在读取期间变更，本件未写入');
+        try {
+            $outcome = DB::transaction(function () use ($source, $code, $existing, $item, $options, $coverAllowed,
+                $fullConfigValid, $target, $deferCover, &$prepared): string {
+                SourceIdentity::lockAndVerify($source);
+                $commodity = Commodity::query()
+                    ->whereKey((int)$existing->id)
+                    ->where('owner', 0)
+                    ->where('shared_id', (int)$source->id)
+                    ->where('shared_code', $code)
+                    ->lockForUpdate()
+                    ->first();
+                if (!$commodity) {
+                    throw new RuntimeException('本地商品在同步期间已变更');
                 }
-            }
-            if (!$coverLoaded && $options->syncs('cover') && (int)$commodity->shared_config_sync === 1) {
-                throw new RuntimeException('商品配置同步开关在读取期间变更，本件未写入');
-            }
-
-            // The catalog snapshot said this item was in stock. A zero detail
-            // response is held without any write so it cannot bypass the fuse.
-            if ($options->syncs('inventory') && (int)$commodity->inventory_sync === 1 && (int)$item['stock'] <= 0) {
-                return 'held_race';
-            }
-
-            $premiumType = (int)$commodity->shared_premium_type;
-            if (!in_array($premiumType, [PriceTemplate::TYPE_FIXED, PriceTemplate::TYPE_PERCENT], true)) {
-                throw new RuntimeException('插件周期同步只支持官方固定或百分比加价');
-            }
-            if ((int)$commodity->shared_sync !== 0) {
-                throw new RuntimeException('本地商品仍由官方核心同步，插件拒绝重复写入');
-            }
-            if (preg_match('/^PKS1[A-F0-9]{20}$/D', (string)$commodity->code) !== 1) {
-                throw new RuntimeException('本地商品不是 PikaSupplySync 导入，插件拒绝接管');
-            }
-            $amountSync = (int)$commodity->shared_amount_sync === 1;
-            $configSync = (int)$commodity->shared_config_sync === 1;
-            if ($options->syncFields !== null) {
-                $amountSync = $amountSync && $options->syncs('price');
-                $configSync = $configSync && $options->syncs('options');
-            }
-            if ($amountSync && $configSync && $options->followsUpstreamConfig((int)$source->id) && !$fullConfigValid) {
-                throw new RuntimeException('完整配置跟随原始结构校验失败，本件未写入');
-            }
-            $prices = ['price' => null, 'user_price' => null, 'config' => []];
-            $draftPremium = null;
-            if ($amountSync || $configSync) {
-                $prices = $this->prices->adjustPrice(
-                    $item['config'],
-                    (string)$item['price'],
-                    (string)$item['user_price'],
-                    $premiumType,
-                    (float)$commodity->shared_premium,
-                );
-                $remoteConfig = $item['config'] === '' ? [] : Ini::toArray($item['config']);
-                if (!empty($remoteConfig['sku'])) {
-                    $prices['config']['sku_cost'] = $remoteConfig['sku'];
-                }
-                if (!empty($remoteConfig['category'])) {
-                    $prices['config']['category_cost'] = $remoteConfig['category'];
-                }
-                if ($amountSync) {
-                    $draftPremium = $item['draft_premium'] > 0
-                        ? $this->prices->adjustAmount(
-                            $premiumType,
-                            (float)$commodity->shared_premium,
-                            $item['draft_premium']
-                        )
-                        : 0;
-                }
-            }
-            $heldSelection = false;
-            $updates = $options->syncFields === null ? $this->buildUpdateValues(
-                $item,
-                $prices,
-                $draftPremium,
-                $amountSync,
-                $configSync,
-                (int)$commodity->inventory_sync === 1,
-            ) : $this->buildSelectedValues($commodity, $item, $prices, $draftPremium, $options, $heldSelection);
-            if ($updates === []) return $heldSelection ? 'held_selection' : 'skipped_selection';
-            foreach ($updates as $field => $value) {
-                $commodity->{$field} = $value;
-            }
-            if (!$commodity->save()) {
-                throw new RuntimeException('商品同步保存失败');
-            }
-            if ($target !== null) {
-                $fresh = Commodity::query()->whereKey((int)$commodity->id)->where('owner', 0)
-                    ->where('shared_id', (int)$source->id)->where('shared_code', $code)->first();
-                if (!$fresh) throw new RuntimeException('定向保存后回读身份不匹配');
-                $this->assertTargetUnchanged($fresh, $target);
-                // Compare the same response's saved candidate, not a second HTTP
-                // request. Money uses core Decimal(2); other values use model casts.
-                foreach (['price', 'user_price', 'draft_premium', 'name', 'cover', 'description', 'config',
-                    'draft_status', 'widget', 'stock', 'shared_stock', 'api_status', 'shared_sync'] as $field) {
-                    if (in_array($field, ['price', 'user_price', 'draft_premium'], true)) {
-                        $expected = (new Decimal($commodity->getAttributes()[$field], 2))->getAmount();
-                        $actual = (new Decimal($fresh->getRawOriginal($field), 2))->getAmount();
-                    } else {
-                        $expected = $commodity->{$field};
-                        $actual = $fresh->{$field};
+                if ($target !== null) {
+                    $this->assertTargetUnchanged($commodity, $target);
+                    $this->assertTargetAuthorization((int)$source->id, $target['target_count']);
+                    if ($options->syncFields !== array_fill_keys(Options::SYNC_FIELDS, true)
+                        || !$options->followsUpstreamConfig((int)$source->id)) {
+                        throw new RuntimeException('定向完整跟随授权在读取期间变更，本件未写入');
                     }
-                    if ($actual !== $expected) throw new RuntimeException('定向保存后字段回读不匹配，本批停止');
                 }
+                if (!$coverAllowed && $options->syncs('cover') && (int)$commodity->shared_config_sync === 1) {
+                    throw new RuntimeException('商品配置同步开关在读取期间变更，本件未写入');
+                }
+
+                // The catalog snapshot said this item was in stock. A zero detail
+                // response is held without any write so it cannot bypass the fuse.
+                if ($options->syncs('inventory') && (int)$commodity->inventory_sync === 1 && (int)$item['stock'] <= 0) {
+                    return 'held_race';
+                }
+
+                $premiumType = (int)$commodity->shared_premium_type;
+                if (!in_array($premiumType, [PriceTemplate::TYPE_FIXED, PriceTemplate::TYPE_PERCENT], true)) {
+                    throw new RuntimeException('插件周期同步只支持官方固定或百分比加价');
+                }
+                if ((int)$commodity->shared_sync !== 0) {
+                    throw new RuntimeException('本地商品仍由官方核心同步，插件拒绝重复写入');
+                }
+                if (preg_match('/^PKS1[A-F0-9]{20}$/D', (string)$commodity->code) !== 1) {
+                    throw new RuntimeException('本地商品不是 PikaSupplySync 导入，插件拒绝接管');
+                }
+                // A second lane may reuse data, never replay an already applied non-cover snapshot.
+                if ($deferCover && ($prepared['noncover_applied'] ?? false)) return 'reused_noncover';
+                $amountSync = (int)$commodity->shared_amount_sync === 1;
+                $configSync = (int)$commodity->shared_config_sync === 1;
+                if ($options->syncFields !== null) {
+                    $amountSync = $amountSync && $options->syncs('price');
+                    $configSync = $configSync && $options->syncs('options');
+                }
+                if ($amountSync && $configSync && $options->followsUpstreamConfig((int)$source->id) && !$fullConfigValid) {
+                    throw new RuntimeException('完整配置跟随原始结构校验失败，本件未写入');
+                }
+                $prices = ['price' => null, 'user_price' => null, 'config' => []];
+                $draftPremium = null;
+                if ($amountSync || $configSync) {
+                    $prices = $this->prices->adjustPrice(
+                        $item['config'],
+                        (string)$item['price'],
+                        (string)$item['user_price'],
+                        $premiumType,
+                        (float)$commodity->shared_premium,
+                    );
+                    $remoteConfig = $item['config'] === '' ? [] : Ini::toArray($item['config']);
+                    if (!empty($remoteConfig['sku'])) {
+                        $prices['config']['sku_cost'] = $remoteConfig['sku'];
+                    }
+                    if (!empty($remoteConfig['category'])) {
+                        $prices['config']['category_cost'] = $remoteConfig['category'];
+                    }
+                    if ($amountSync) {
+                        $draftPremium = $item['draft_premium'] > 0
+                            ? $this->prices->adjustAmount(
+                                $premiumType,
+                                (float)$commodity->shared_premium,
+                                $item['draft_premium']
+                            )
+                            : 0;
+                    }
+                }
+                $heldSelection = false;
+                $updates = $options->syncFields === null ? $this->buildUpdateValues(
+                    $item,
+                    $prices,
+                    $draftPremium,
+                    $amountSync,
+                    $configSync,
+                    (int)$commodity->inventory_sync === 1,
+                    $deferCover,
+                ) : $this->buildSelectedValues($commodity, $item, $prices, $draftPremium, $options, $heldSelection, $deferCover);
+                if ($updates === []) return $heldSelection ? 'held_selection' : 'skipped_selection';
+                foreach ($updates as $field => $value) {
+                    $commodity->{$field} = $value;
+                }
+                if (!$commodity->save()) {
+                    throw new RuntimeException('商品同步保存失败');
+                }
+                if ($target !== null) {
+                    $fresh = Commodity::query()->whereKey((int)$commodity->id)->where('owner', 0)
+                        ->where('shared_id', (int)$source->id)->where('shared_code', $code)->first();
+                    if (!$fresh) throw new RuntimeException('定向保存后回读身份不匹配');
+                    $this->assertTargetUnchanged($fresh, $target);
+                    // Compare the same response's saved candidate, not a second HTTP
+                    // request. Money uses core Decimal(2); other values use model casts.
+                    foreach (['price', 'user_price', 'draft_premium', 'name', 'cover', 'description', 'config',
+                        'draft_status', 'widget', 'stock', 'shared_stock', 'api_status', 'shared_sync'] as $field) {
+                        if (in_array($field, ['price', 'user_price', 'draft_premium'], true)) {
+                            $expected = (new Decimal($commodity->getAttributes()[$field], 2))->getAmount();
+                            $actual = (new Decimal($fresh->getRawOriginal($field), 2))->getAmount();
+                        } else {
+                            $expected = $commodity->{$field};
+                            $actual = $fresh->{$field};
+                        }
+                        if ($actual !== $expected) throw new RuntimeException('定向保存后字段回读不匹配，本批停止');
+                    }
+                }
+                return $heldSelection ? 'partial_selection' : 'synced';
+            });
+        } catch (\Throwable $exception) {
+            if ($deferCover) $prepared['error'] = $exception;
+            throw $exception;
+        }
+        if ($deferCover && in_array($outcome, ['synced', 'partial_selection'], true)) $prepared['noncover_applied'] = true;
+        return $outcome;
+    }
+
+    /** Only cover may be written here; re-lock current rows on both sides of network I/O. */
+    private function refreshExistingCover(Shared $source, string $code, array $prepared,
+        RemoteItem $normalizer, Options $options, bool &$coverAttempted): bool
+    {
+        if (!$options->syncs('cover') || !($prepared['cover_allowed'] ?? false)) return false;
+        $lockedRow = static function () use ($source, $code, $prepared, $options): ?Commodity {
+            SourceIdentity::lockAndVerify($source);
+            $row = Commodity::query()->whereKey($prepared['id'])->where('owner', 0)
+                ->where('shared_id', (int)$source->id)->where('shared_code', $code)->lockForUpdate()->first();
+            if (!$row || (int)$row->shared_sync !== 0
+                || preg_match('/^PKS1[A-F0-9]{20}$/D', (string)$row->code) !== 1
+                || !in_array((int)$row->shared_premium_type, [PriceTemplate::TYPE_FIXED, PriceTemplate::TYPE_PERCENT], true)) {
+                throw new RuntimeException('本地商品不允许由插件更新封面');
             }
-            return $heldSelection ? 'partial_selection' : 'synced';
+            if ((int)$row->shared_config_sync !== 1) return null;
+            if ($options->syncs('inventory') && (int)$row->inventory_sync === 1 && $prepared['item']['stock'] <= 0) return null;
+            return $row;
+        };
+        if (!DB::transaction(static fn(): bool => $lockedRow() !== null)) return false;
+        $coverAttempted = true;
+        if ($prepared['cover_error'] !== null) throw $prepared['cover_error'];
+        $cover = $normalizer->refreshCover($source, $prepared['cover_value']);
+        $saved = DB::transaction(static function () use ($lockedRow, $cover): bool {
+            $row = $lockedRow();
+            if ($row === null) return false;
+            $row->cover = $cover;
+            if (!$row->save()) throw new RuntimeException('商品封面同步保存失败');
+            return true;
         });
+        $coverAttempted = false;
+        return $saved;
     }
 
     private function hasSelectedField(Commodity $commodity, Options $options): bool
@@ -719,7 +891,7 @@ final class SyncService
     }
 
     private function buildSelectedValues(Commodity $commodity, array $item, array $prices,
-        string|int|float|null $draftPremium, Options $options, bool &$held): array
+        string|int|float|null $draftPremium, Options $options, bool &$held, bool $deferCover = false): array
     {
         $updates = [];
         $price = $options->syncs('price') && (int)$commodity->shared_amount_sync === 1;
@@ -731,6 +903,7 @@ final class SyncService
             $updates['draft_premium'] = $draftPremium;
         }
         foreach (['name', 'cover', 'description'] as $field) {
+            if ($field === 'cover' && $deferCover) continue;
             if ($config && $options->syncs($field) && ($field !== 'cover' || empty($item['cover_unavailable']))) {
                 $updates[$field] = $item[$field];
             }
@@ -771,6 +944,7 @@ final class SyncService
         bool $amountSync,
         bool $configSync,
         bool $inventorySync,
+        bool $deferCover = false,
     ): array {
         $updates = ['api_status' => 1, 'shared_sync' => 0];
         if ($amountSync) {
@@ -782,7 +956,7 @@ final class SyncService
             $updates['config'] = Ini::toConfig($prices['config']);
             $updates['name'] = $item['name'];
             $updates['description'] = $item['description'];
-            if (empty($item['cover_unavailable'])) $updates['cover'] = $item['cover'];
+            if (!$deferCover && empty($item['cover_unavailable'])) $updates['cover'] = $item['cover'];
             $updates['draft_status'] = $item['draft_status'];
             $updates['widget'] = $item['widget'];
         }

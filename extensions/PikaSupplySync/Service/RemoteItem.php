@@ -148,6 +148,24 @@ final class RemoteItem
         return $clean;
     }
 
+    /** Validate a deferred value without retaining an unbounded remote field. */
+    public function coverValue(mixed $value): string
+    {
+        if (!is_scalar($value)) {
+            throw new RemoteItemDataInvalid('远端商品封面格式不正确');
+        }
+        $cover = trim((string)$value);
+        if (strlen($cover) > 2048 || preg_match('/[\x00-\x20\x7F\\\\]/', $cover)) {
+            throw new RemoteCoverUnavailable('远端封面地址不正确');
+        }
+        return $cover;
+    }
+
+    public function refreshCover(Shared $source, mixed $value): string
+    {
+        return $this->cover($source, $value, true);
+    }
+
     private function cover(Shared $source, mixed $value, bool $refresh = false): string
     {
         if (!is_scalar($value)) {

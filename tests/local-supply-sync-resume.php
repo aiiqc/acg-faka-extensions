@@ -79,6 +79,7 @@ namespace {
     use Pika\LocalExtensions\PikaSupplySync\Service\SafeHttpClient;
     use Pika\LocalExtensions\PikaSupplySync\Service\SharedGateway;
     use Pika\LocalExtensions\PikaSupplySync\Service\SourcePolicy;
+    use Pika\LocalExtensions\PikaSupplySync\Service\SourceIdentity;
     use Pika\LocalExtensions\PikaSupplySync\Service\StateStore;
     use Pika\LocalExtensions\PikaSupplySync\Service\SyncService;
     use Pika\LocalExtensions\PikaSupplySync\Service\UpstreamFailure;
@@ -621,7 +622,8 @@ namespace {
                     $reply = $detailReply($form);
                     if ($reply !== null) return $reply + ['connected_ip' => $address];
                 }
-            } elseif ($path === '/fixture-cover.png' && $imageResponse !== null) {
+            } elseif (is_string($path) && preg_match('#^/fixture-cover(?:-[A-Za-z0-9-]+)?\.png$#D', $path) === 1
+                && $imageResponse !== null) {
                 $requests['image']++;
                 resumeExpect($method === 'GET' && $body === '', 'cover fixture must use a body-free GET');
                 return $imageResponse($endpoint['url']) + ['connected_ip' => $address];
@@ -848,12 +850,18 @@ namespace {
         $observed = $observeRun($service, $options);
         $log = $lastSelectionLog();
         $stateAfter = (new StateStore())->read($sourceId);
-        resumeExpect($observed['result']['status'] === 'partial' && $observed['writes'] === 0
-            && $observed['result']['applied']['sync'] === 0 && $sourceRows($sourceId) === $before
-            && $stateAfter['cursor'] === $stateBefore['cursor']
+        $expectedBeforeRetry = $before;
+        if ($failureStage === 'image') {
+            $expectedBeforeRetry[0] = array_replace($before[0], ['name' => 'Remote fixture A', 'api_status' => 1]);
+        }
+        resumeExpect($observed['result']['status'] === 'partial'
+            && $observed['writes'] === ($failureStage === 'image' ? 1 : 0)
+            && $observed['result']['applied']['sync'] === ($failureStage === 'image' ? 1 : 0)
+            && $sourceRows($sourceId) === $expectedBeforeRetry
+            && $stateAfter['cursor'] === ($failureStage === 'image' ? 'A' : $stateBefore['cursor'])
             && $stateAfter['priority_cursor'] === $stateBefore['priority_cursor']
             && $requests === ['catalog' => 1, 'detail' => 1, 'other' => 0, 'image' => $failureStage === 'image' ? 1 : 0],
-            'request budget failure changed partial writes, calls or cursor behavior');
+            'request budget failure lost the completed non-cover phase or advanced an uncompleted trade cursor');
         resumeExpect($log['status'] === 'partial' && $log['budget_scope'] === 'source' && $log['phase'] === 'actions'
             && $log['failure_diagnostic']['stage'] === $failureStage
             && $log['request_diagnostics'][$failureStage]['last']['category'] === 'budget'
@@ -868,7 +876,7 @@ namespace {
         $cut = false;
         $continued = $observeRun($service, $options);
         $log = $lastSelectionLog();
-        resumeExpect($continued['result']['status'] === 'ok' && $continued['writes'] === 1
+        resumeExpect($continued['result']['status'] === 'ok' && $continued['writes'] === ($failureStage === 'detail' ? 2 : 1)
             && $continued['result']['applied']['sync'] === 1 && $log['status'] === 'ok'
             && !isset($log['budget_scope']) && !isset($log['failure_diagnostic'])
             && !isset($log['request_diagnostics'][$failureStage]['last_failure'])
@@ -946,13 +954,14 @@ namespace {
     $unknownState = (new StateStore())->read($unknownSource);
     $preview = $observeRun($makeSelectionService($unknownTree, $unknownDetails, $unknownRequests, $unknownImage), $unknownPreview);
     resumeExpect($preview['result']['status'] === 'partial' && $preview['result']['catalog_unknown'] === 19
-        && $preview['result']['planned']['held_unknown'] === 4 && $preview['result']['applied']['held_unknown'] === 0
+        && $preview['result']['planned']['held_unknown'] === 2 && $preview['result']['planned']['sync'] === 2
+        && $preview['result']['applied']['held_unknown'] === 0
         && $preview['writes'] === 0 && $sourceRows($unknownSource) === $unknownBefore
         && (new StateStore())->read($unknownSource) === $unknownState,
         'unknown preview must expose planned protection without advancing or writing');
     $unknownHeld = $unknownSynced = $unknownDetailCalls = 0;
-    for ($round = 0; $round < 7; $round++) {
-        $unknownOptions->batchLimit = $round === 6 ? 2 : 4;
+    for ($round = 0; $round < 13; $round++) {
+        $unknownOptions->batchLimit = 4;
         $observed = $observeRun($makeSelectionService($unknownTree, $unknownDetails, $unknownRequests, $unknownImage), $unknownOptions);
         $unknownHeld += $observed['result']['applied']['held_unknown'];
         $unknownSynced += $observed['result']['applied']['sync'];
@@ -962,8 +971,9 @@ namespace {
             && $observed['result']['catalog_total'] === 27 && $observed['result']['catalog_unknown'] === 19
             && $observed['result']['applied']['zero'] === 0 && $observed['result']['applied']['import'] === 0
             && $unknownRequests['catalog'] === 1 && $unknownRequests['other'] === 0
-            && $unknownRequests['image'] === ($observed['result']['applied']['sync'] > 0 ? 1 : 0)
-            && $observed['writes'] === $observed['result']['applied']['sync']
+            && $unknownRequests['image'] === ($observed['result']['field_sync']['media_refreshed'] > 0 ? 1 : 0)
+            && $unknownRequests['detail'] <= 4
+            && $observed['result']['field_sync']['trade_planned'] + $observed['result']['field_sync']['media_planned'] <= 4
             && array_slice($sourceRows($unknownSource), 0, 18) === array_slice($unknownBefore, 0, 18)
             && DB::table('commodity')->count() === $unknownTotalRows
             && DB::table('category')->orderBy('id')->get()->toJson() === $unknownCategories,
@@ -982,9 +992,13 @@ namespace {
             && $log['catalog_unknown'] === 19 && $loggedApplied === $resultApplied,
             'unknown counts diverged between actual result, saved state and safe log');
     }
-    resumeExpect($unknownHeld === 18 && $unknownSynced === 8 && $unknownDetailCalls === 8
+    resumeExpect($unknownHeld === 18 && $unknownSynced === 34 && $unknownDetailCalls === 34
         && (new StateStore())->read($unknownSource)['cursor'] === 'V07',
         'ordinary cursor must pass held identities and reach all eight valid manual products');
+    foreach (array_slice($sourceRows($unknownSource), -8) as $row) {
+        resumeExpect($row['name'] === 'Remote fixture ' . $row['shared_code'] && $row['stock'] === 7
+            && $row['cover'] !== '/local-fixture.png', 'scheduled unknown traversal failed to update a valid manual product');
+    }
     $recoveredTree = $unknownTree;
     $recoveredTree[0]['children'][1]['stock'] = 9;
     $unknownDetails['U01'] = ['cover' => '/fixture-cover.png'] + $selectionDetail('U01', [], 9);
@@ -1135,7 +1149,7 @@ namespace {
         && $result['mass_zero_fuse'] === false && $result['mass_zero_ratio'] == 0,
         'inventory-disabled shortage used zero/fuse/race handling');
     $state = (new StateStore())->read(102);
-    resumeExpect($state['priority_cursor'] === '' && $state['cursor'] === 'D', 'inventory-disabled shortage entered the priority lane');
+    resumeExpect($state['priority_cursor'] === '' && $state['cursor'] === 'C', 'cursor advanced past an item with no selected action');
     resumeExpect($requests === ['catalog' => 1, 'detail' => 3, 'other' => 0] && $observed['writes'] === 3,
         'inventory-disabled name updates did not perform exactly three independent saves');
     foreach ($sourceRows(102) as $index => $row) {
@@ -1152,7 +1166,7 @@ namespace {
     $service = $makeSelectionService($selectionCatalog(['A' => 2]), [], $requests);
     $before = $sourceRows(103);
     $observed = $observeRun($service, $selectedOptions(103, ['cover']));
-    resumeExpect($observed['result']['planned']['sync'] === 1 && $observed['result']['applied']['sync'] === 0
+    resumeExpect($observed['result']['planned']['sync'] === 0 && $observed['result']['applied']['sync'] === 0
         && $observed['result']['status'] === 'ok' && $requests === ['catalog' => 1, 'detail' => 0, 'other' => 0]
         && $observed['writes'] === 0 && $sourceRows(103) === $before,
         'cover selected behind disabled per-item config gate fetched detail or saved');
@@ -1205,7 +1219,7 @@ namespace {
     $after = $sourceRows(106)[0];
     $legacyConfig = Ini::toArray($after['config']);
     resumeExpect($legacy->syncFields === null && $observed['result']['status'] === 'ok'
-        && $observed['result']['applied']['sync'] === 1 && $observed['writes'] === 1
+        && $observed['result']['applied']['sync'] === 1 && $observed['writes'] === 2
         && $requests === ['catalog' => 1, 'detail' => 1, 'other' => 0, 'image' => 1]
         && $legacyConfig['category']['Basic'] === '15.00' && $legacyConfig['sku']['Region']['East'] === '3.00'
         && $legacyConfig['category_cost']['Basic'] === '10.00' && $legacyConfig['sku_cost']['Region']['East'] === '2.00',
@@ -1366,7 +1380,7 @@ namespace {
         $observed = $observeRun($imageService, $imageOptions);
         $expected = array_map(static fn(array $row): array => array_replace($row,
             ['name' => 'Remote fixture ' . $row['shared_code'], 'cover' => $imagePath($bytes), 'api_status' => 1]), $before);
-        resumeExpect(count($observed['sources']) === 2 && $observed['writes'] === 3
+        resumeExpect(count($observed['sources']) === 2 && $observed['writes'] === ($bytes === $redImage ? 6 : 3)
             && $requests === ['catalog' => 2, 'detail' => 3, 'other' => 0, 'image' => 1]
             && array_merge($sourceRows(111), $sourceRows(112)) === $expected
             && DB::table('commodity')->count() === $totalRows,
@@ -1387,6 +1401,8 @@ namespace {
 
     // Cached fatal cover failures may cross sources, but their request evidence must not.
     $coverStatus = 401;
+    foreach ($imageDetails as &$detail) $detail['name'] = 'Non-cover saved before image 401';
+    unset($detail);
     $requests = [];
     $cachedFailureService = $makeSelectionService($imageCatalog, $imageDetails, $requests, $serveCover);
     $before = array_merge($sourceRows(111), $sourceRows(112));
@@ -1395,7 +1411,7 @@ namespace {
     $sourcesWithImageRequest = 0;
     foreach ($cachedFailureRun['sources'] as $result) {
         $sourcesWithImageRequest += isset($result['request_diagnostics']['image']) ? 1 : 0;
-        resumeExpect($result['status'] === 'partial' && $result['applied']['sync'] === 0
+        resumeExpect($result['status'] === 'partial' && $result['applied']['sync'] === ($result['source_id'] === 111 ? 2 : 1)
             && $result['failure_diagnostic'] === ['category' => 'http_rejected', 'stage' => 'image'],
             'reused fatal image exception imported another source request history or hid failure');
         resumeExpect($result['error_total'] === $result['failed'] && $result['errors_truncated'] === false,
@@ -1404,10 +1420,12 @@ namespace {
             'category' => 'http_rejected', 'stage' => 'image',
         ], 'cached image record inherited cross-source timing, attempts, HTTP or response data');
     }
-    resumeExpect($sourcesWithImageRequest === 1 && $cachedFailureRun['writes'] === 0
-        && array_merge($sourceRows(111), $sourceRows(112)) === $before && $imageFiles() === $beforeFiles
+    $afterImage401 = array_map(static fn(array $row): array => array_replace($row,
+        ['name' => 'Non-cover saved before image 401']), $before);
+    resumeExpect($sourcesWithImageRequest === 1 && $cachedFailureRun['writes'] === 3
+        && array_merge($sourceRows(111), $sourceRows(112)) === $afterImage401 && $imageFiles() === $beforeFiles
         && $requests === ['catalog' => 2, 'detail' => 3, 'other' => 0, 'image' => 1],
-        'cross-source diagnostics changed image deduplication, calls or fatal save behavior');
+        'image 401 must preserve valid non-cover commits, old covers and cross-source request isolation');
 
     $beforeImages = $imageFiles();
     $imageOptions = $selectedOptions(111, Options::SYNC_FIELDS, ['source_ids' => '111,112']);
@@ -1501,10 +1519,10 @@ namespace {
     $before = array_merge($sourceRows(111), $sourceRows(112));
     $observed = $observeRun($imageService, $imageOptions);
     resumeExpect($observed['writes'] === 0 && array_merge($sourceRows(111), $sourceRows(112)) === $before
-        && $requests === ['catalog' => 2, 'detail' => 3, 'other' => 0, 'image' => 1]
-        && array_sum(array_column($observed['sources'], 'cover_failed')) === 3
-        && array_sum(array_column($observed['sources'], 'failed')) === 3 && $imageFiles() === $beforeImages,
-        'cover failure must not bypass the catalog/detail zero-stock race guard');
+        && $requests === ['catalog' => 2, 'detail' => 3, 'other' => 0, 'image' => 0]
+        && array_sum(array_column($observed['sources'], 'cover_failed')) === 0
+        && array_sum(array_column($observed['sources'], 'failed')) === 0 && $imageFiles() === $beforeImages,
+        'catalog/detail zero-stock race must stop before either write phase or image request');
     foreach ($observed['sources'] as $result) {
         $expectedHeld = (int)$result['source_id'] === 111 ? 2 : 1;
         resumeExpect($result['status'] === 'partial' && $result['applied']['held_race'] === $expectedHeld
@@ -1558,6 +1576,314 @@ namespace {
         && $observed['result']['status'] === 'ok' && $observed['result']['applied']['sync'] === 0
         && $requests === ['catalog' => 1, 'detail' => 0, 'other' => 0, 'image' => 0]
         && $imageFiles() === $beforeImages, 'disabled per-item config gate must not fetch or replace a valid cached cover');
+
+    // Scheduled actions keep one common cap and expose only bounded counters.
+    $fieldSync = static function (array $result, int $limit): array {
+        $fields = $result['field_sync'] ?? null;
+        $keys = ['trade_planned', 'noncover_saved', 'media_planned', 'media_attempted',
+            'media_refreshed', 'media_failed', 'media_deferred', 'image_quota_scope'];
+        resumeExpect(is_array($fields) && array_keys($fields) === $keys, 'field_sync schema changed');
+        foreach (array_slice($keys, 0, -1) as $key) {
+            resumeExpect(is_int($fields[$key]) && $fields[$key] >= 0 && $fields[$key] <= 500,
+                'field_sync counter is not a bounded integer: ' . $key);
+        }
+        resumeExpect(in_array($fields['image_quota_scope'], ['none', 'source', 'round'], true)
+            && $fields['trade_planned'] + $fields['media_planned'] <= $limit
+            && $fields['media_refreshed'] + $fields['media_failed'] + $fields['media_deferred'] === $fields['media_planned'],
+            'field_sync lost its common action cap or media accounting');
+        return $fields;
+    };
+    $readSchedule = static function (int $sourceId): array {
+        $store = new StateStore();
+        return $store->readSchedule($sourceId, $store->read($sourceId),
+            SourceIdentity::fingerprint(\App\Model\Shared::query()->findOrFail($sourceId)));
+    };
+    $setSchedule = static function (int $sourceId, string $mediaCursor, int $slot = 0): void {
+        $store = new StateStore();
+        $legacy = $store->read($sourceId);
+        $store->write($sourceId, $legacy);
+        $store->writeSchedule($sourceId, $legacy,
+            SourceIdentity::fingerprint(\App\Model\Shared::query()->findOrFail($sourceId)),
+            ['schema' => 1, 'media_cursor' => $mediaCursor, 'next_slot' => $slot, 'basis_hash' => str_repeat('0', 64)]);
+    };
+    $scheduledFixture = static function (array $sourceIds, int $count = 150) use ($seedSelectionSource, $selectionDetail): array {
+        $stocks = $details = [];
+        foreach ($sourceIds as $sourceId) {
+            $rows = [];
+            foreach (range(1, $count) as $number) {
+                $code = sprintf('S%dC%03d', $sourceId, $number);
+                $rows[$code] = ['stock' => 1, 'shared_premium' => '0.10'];
+                $stocks[$code] = 2;
+                $details[$code] = ['cover' => '/fixture-cover-' . $code . '.png'] + $selectionDetail($code);
+            }
+            $seedSelectionSource($sourceId, $rows);
+        }
+        return [$stocks, $details];
+    };
+    $scheduledCounter = static function (SyncService $service, string $counter): int {
+        $budget = (new \ReflectionProperty(SyncService::class, 'budget'))->getValue($service);
+        return (new \ReflectionProperty(RunBudget::class, $counter))->getValue($budget);
+    };
+
+    // Actual RunBudget limits, fixed remaining time and distinct URLs: the 26th
+    // source reservation makes no HTTP call, and later priority saves still run.
+    $countSources = [12001, 12002, 12003, 12004, 12005];
+    [$quotaStocks, $quotaDetails] = $scheduledFixture($countSources);
+    $setSchedule(12001, 'S12001C112');
+    $quotaDetailCalls = $quotaImageCalls = [];
+    $stockAtLastAllowedImage = null;
+    $requests = [];
+    $quotaService = $makeSelectionService($selectionCatalog($quotaStocks), $quotaDetails, $requests,
+        imageResponse: static function (string $url) use (&$quotaImageCalls, &$stockAtLastAllowedImage, $redImage): array {
+            $quotaImageCalls[] = $url;
+            if (count($quotaImageCalls) === 25) {
+                $stockAtLastAllowedImage = DB::table('commodity')->where('shared_id', 12001)
+                    ->where('shared_code', 'S12001C112')->value('stock');
+            }
+            return ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage];
+        }, detailReply: static function (array $form) use (&$quotaDetailCalls): ?array {
+            $code = $form['code'];
+            $quotaDetailCalls[$code] = ($quotaDetailCalls[$code] ?? 0) + 1;
+            return null;
+        });
+    $quotaOptions = $selectedOptions(12001, ['price', 'inventory', 'cover'],
+        ['source_ids' => implode(',', $countSources), 'batch_limit' => 150]);
+    $quotaRun = $observeRun($quotaService, $quotaOptions);
+    resumeExpect(count($quotaRun['sources']) === 5 && count($quotaImageCalls) === 100
+        && count(array_unique($quotaImageCalls)) === 100 && $requests['image'] === 100
+        && max($quotaDetailCalls) === 1 && $requests['other'] === 0
+        && $scheduledCounter($quotaService, 'imageDownloads') === 101 && $stockAtLastAllowedImage === 1,
+        'source image-count quota reset the round count, retried HTTP or repeated a logical detail');
+    foreach ($quotaRun['sources'] as $result) {
+        $id = $result['source_id'];
+        $fields = $fieldSync($result, 150);
+        $firstSource = $id === 12001;
+        $roundLimited = $id === 12005;
+        resumeExpect($result['status'] === 'partial' && !isset($result['budget_scope'])
+            && $fields['trade_planned'] === 113 && $fields['media_planned'] === 37
+            && $fields['image_quota_scope'] === ($roundLimited ? 'round' : 'source')
+            && $fields['media_attempted'] === ($roundLimited ? 1 : 26)
+            && $fields['media_refreshed'] === ($roundLimited ? 0 : 25)
+            && $fields['media_failed'] === 0
+            && $fields['noncover_saved'] === ($firstSource ? 138 : 113),
+            'image quota must defer remaining M actions while all planned trade actions finish');
+        $rows = $sourceRows($id);
+        resumeExpect($rows[111]['stock'] === 2 && $rows[111]['price'] === 44
+            && $rows[112]['stock'] === 2 && $rows[112]['price'] === 44
+            && $rows[112]['shared_stock'] === '[]' && $rows[149]['stock'] === 1,
+            'later trade save did not survive the image quota or exceeded the common action budget');
+        if ($firstSource) {
+            resumeExpect($readSchedule($id)['media_cursor'] === 'S12001C138'
+                && !isset($quotaDetailCalls['S12001C139']) && !isset($quotaDetailCalls['S12001C149'])
+                && $rows[137]['price'] === 44 && $rows[138]['price'] === 99,
+                'quota must advance only the entered media attempt and skip all later media detail work');
+        }
+        $stored = (new StateStore())->read($id);
+        resumeExpect(array_keys($stored) === ['cursor', 'priority_cursor', 'categories', 'catalog_hash', 'last_run', 'last_result']
+            && !isset($stored['last_result']['field_sync'])
+            && array_keys($readSchedule($id)) === ['schema', 'media_cursor', 'next_slot', 'basis_hash'],
+            'scheduled execution changed the legacy state schema or lost its separate sidecar');
+    }
+    resumeExpect($lastSelectionLog()['field_sync'] === $quotaRun['sources'][4]['field_sync'],
+        'safe persisted log lost the actual bounded scheduling counters');
+
+    // A legal five-MiB PNG exercises byte quotas without increasing any limit.
+    $paddedImage = str_pad($redImage, 5242880, "\0");
+    [$byteStocks, $byteDetails] = $scheduledFixture([12101, 12102, 12103]);
+    $byteDetailCalls = [];
+    $requests = [];
+    $byteService = $makeSelectionService($selectionCatalog($byteStocks), $byteDetails, $requests,
+        imageResponse: static fn(): array => ['status' => 200, 'content_type' => 'image/png', 'body' => $paddedImage],
+        detailReply: static function (array $form) use (&$byteDetailCalls): ?array {
+            $code = $form['code'];
+            $byteDetailCalls[$code] = ($byteDetailCalls[$code] ?? 0) + 1;
+            return null;
+        });
+    $byteRun = $observeRun($byteService, $selectedOptions(12101, ['price', 'inventory', 'cover'],
+        ['source_ids' => '12101,12102,12103', 'batch_limit' => 150]));
+    resumeExpect(count($byteRun['sources']) === 3 && $requests['image'] === 11
+        && $scheduledCounter($byteService, 'imageBytes') === 11 * 5242880
+        && max($byteDetailCalls) === 1,
+        'image byte totals must remain cumulative after source and round quota failures');
+    foreach ($byteRun['sources'] as $index => $result) {
+        $fields = $fieldSync($result, 150);
+        resumeExpect($result['status'] === 'partial' && !isset($result['budget_scope'])
+            && $fields['image_quota_scope'] === ($index === 0 ? 'source' : 'round')
+            && $fields['media_attempted'] === [6, 5, 0][$index]
+            && $fields['media_refreshed'] === [5, 4, 0][$index]
+            && $fields['media_failed'] === 0 && $fields['noncover_saved'] === 113
+            && $sourceRows($result['source_id'])[112]['price'] === 44,
+            'source/round image byte quota stopped trade or started media after the round was closed');
+    }
+    unset($paddedImage);
+
+    // Generic text and round deadlines retain the old break behavior.
+    [$textStocks, $textDetails] = $scheduledFixture([12201, 12202, 12203], 10);
+    foreach ($textDetails as &$detail) $detail['description'] = str_repeat('x', 1048000);
+    unset($detail);
+    $requests = [];
+    $textRun = $observeRun($makeSelectionService($selectionCatalog($textStocks), $textDetails, $requests),
+        $selectedOptions(12201, ['name', 'description'], ['source_ids' => '12201,12202,12203', 'batch_limit' => 20]));
+    resumeExpect(count($textRun['sources']) === 2 && $requests['catalog'] === 2 && $requests['detail'] === 11
+        && $textRun['sources'][0]['budget_scope'] === 'source' && $textRun['sources'][1]['budget_scope'] === 'round'
+        && $sourceRows(12201)[4]['name'] === 'Remote fixture S12201C005'
+        && $sourceRows(12201)[5]['name'] === 'Local fixture name'
+        && $sourceRows(12202)[3]['name'] === 'Remote fixture S12202C004'
+        && $sourceRows(12203)[0]['name'] === 'Local fixture name',
+        'generic text limits must still break the source or whole round before later trade writes');
+    foreach ($textRun['sources'] as $result) {
+        resumeExpect($fieldSync($result, 20)['image_quota_scope'] === 'none', 'text quota was mislabeled as an image quota');
+    }
+    unset($textDetails);
+    [$deadlineStocks, $deadlineDetails] = $scheduledFixture([12301, 12302], 1);
+    $deadlineNow = 0.0;
+    $requests = [];
+    $deadlineRun = $observeRun($makeSelectionService($selectionCatalog($deadlineStocks), $deadlineDetails, $requests,
+        imageResponse: static function () use (&$deadlineNow, $redImage): array {
+            $deadlineNow = 301.0;
+            return ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage];
+        }, clock: static function () use (&$deadlineNow): float { return $deadlineNow; }),
+        $selectedOptions(12301, ['name', 'cover'], ['source_ids' => '12301,12302']));
+    resumeExpect(count($deadlineRun['sources']) === 1 && $deadlineRun['result']['budget_scope'] === 'round'
+        && $fieldSync($deadlineRun['result'], 4)['image_quota_scope'] === 'none'
+        && $requests === ['catalog' => 1, 'detail' => 1, 'other' => 0, 'image' => 1]
+        && $sourceRows(12301)[0]['name'] === 'Remote fixture S12301C001'
+        && $sourceRows(12301)[0]['cover'] === '/local-fixture.png'
+        && $sourceRows(12302)[0]['name'] === 'Local fixture name',
+        'round deadline during M must preserve prior trade but still stop every later source');
+
+    // Cover save re-locks current rows after transport; it cannot replay the
+    // earlier verified price/stock/config snapshot or restore a revoked gate.
+    foreach (['current_values', 'config_gate', 'source_identity', 'cover_only'] as $index => $raceKind) {
+        $sourceId = 12401 + $index;
+        $seedSelectionSource($sourceId, ['A' => ['shared_premium' => '0.10']]);
+        $before = $sourceRows($sourceId)[0];
+        $injected = null;
+        $requests = [];
+        $raceService = $makeSelectionService($selectionCatalog(['A' => 2]),
+            ['A' => ['cover' => '/fixture-cover.png'] + $selectionDetail('A', [], 2)], $requests,
+            imageResponse: static function () use ($sourceId, $raceKind, &$injected, $sourceRows, $redImage): array {
+                $atImage = $sourceRows($sourceId)[0];
+                if ($raceKind === 'current_values') {
+                    resumeExpect($atImage['price'] === 44 && $atImage['stock'] === 2,
+                        'non-cover fields were not committed before image transport');
+                    DB::table('commodity')->where('shared_id', $sourceId)->update([
+                        'price' => 777, 'stock' => 13, 'config' => Ini::toConfig(['fixture_note' => ['value' => 'later']]),
+                    ]);
+                } elseif ($raceKind === 'config_gate') {
+                    DB::table('commodity')->where('shared_id', $sourceId)->update(['shared_config_sync' => 0]);
+                } elseif ($raceKind === 'source_identity') {
+                    DB::table('shared')->where('id', $sourceId)->update(['app_id' => 'changed-fixture-identity']);
+                }
+                $injected = $sourceRows($sourceId)[0];
+                return ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage];
+            });
+        $raceRun = $observeRun($raceService, $selectedOptions($sourceId,
+            $raceKind === 'cover_only' ? ['cover'] : ['name', 'price', 'inventory', 'options', 'cover']));
+        $expected = $injected;
+        if (in_array($raceKind, ['current_values', 'cover_only'], true)) $expected['cover'] = $imagePath($redImage);
+        resumeExpect($requests === ['catalog' => 1, 'detail' => 1, 'other' => 0, 'image' => 1]
+            && $sourceRows($sourceId) === [$expected], 'media replayed non-cover values or bypassed a post-transport safety gate');
+        $fields = $fieldSync($raceRun['result'], 4);
+        if ($raceKind === 'cover_only') {
+            resumeExpect($expected === array_replace($before, ['cover' => $imagePath($redImage)])
+                && $fields['trade_planned'] === 0 && $fields['noncover_saved'] === 0 && $fields['media_refreshed'] === 1,
+                'successful cover-only sync changed housekeeping or any other commodity column');
+        }
+    }
+    // A checkpoint before M must leave its cursor untouched and preserve the
+    // deferred opportunity; the next run starts M despite persistent P work.
+    $fairRows = $fairStocks = $fairDetails = [];
+    foreach (range('A', 'J') as $code) {
+        $fairRows[$code] = ['stock' => $code < 'I' ? 1 : 2];
+        $fairStocks[$code] = 2;
+        $fairDetails[$code] = ['cover' => '/fixture-cover-' . $code . '.png'] + $selectionDetail($code);
+    }
+    $seedSelectionSource(12501, $fairRows);
+    $cutBeforeMedia = true;
+    $fairClock = static function () use (&$cutBeforeMedia): float {
+        return $cutBeforeMedia && DB::table('commodity')->where('shared_id', 12501)->where('shared_code', 'I')
+            ->value('name') === 'Remote fixture I' ? 121.0 : 0.0;
+    };
+    $requests = [];
+    $fairFirst = $observeRun($makeSelectionService($selectionCatalog($fairStocks), $fairDetails, $requests,
+        imageResponse: static fn(): array => ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage],
+        clock: $fairClock), $selectedOptions(12501, ['name', 'inventory', 'cover'], ['batch_limit' => 5]));
+    $fairState = (new StateStore())->read(12501);
+    $fairSchedule = $readSchedule(12501);
+    resumeExpect($fairFirst['result']['budget_scope'] === 'source' && $requests['image'] === 0
+        && $fieldSync($fairFirst['result'], 5)['media_attempted'] === 0
+        && $fairState['priority_cursor'] === 'C' && $fairState['cursor'] === 'I'
+        && $fairSchedule['next_slot'] === 4 && $fairSchedule['media_cursor'] === '',
+        'pre-action checkpoint advanced M or discarded completed P/O cursors');
+    $cutBeforeMedia = false;
+    foreach ([4, 5] as $fairLimit) {
+        DB::table('commodity')->where('shared_id', 12501)->whereIn('shared_code', range('A', 'H'))->update(['stock' => 1]);
+        $requests = [];
+        $fairContinuation = $observeRun($makeSelectionService($selectionCatalog($fairStocks), $fairDetails, $requests,
+            imageResponse: static fn(): array => ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage]),
+            $selectedOptions(12501, ['name', 'inventory', 'cover'], ['batch_limit' => $fairLimit]));
+        resumeExpect($fieldSync($fairContinuation['result'], $fairLimit)['media_refreshed'] >= 1
+            && $requests['detail'] <= $fairLimit, 'persistent priority work starved the deferred media opportunity');
+    }
+    $fairRowsAfter = $sourceRows(12501);
+    resumeExpect($fairRowsAfter[8]['name'] === 'Remote fixture I' && $fairRowsAfter[9]['name'] === 'Remote fixture J'
+        && $fairRowsAfter[0]['cover'] !== '/local-fixture.png' && $fairRowsAfter[1]['cover'] !== '/local-fixture.png',
+        'ordinary or media work failed to advance across priority-heavy run boundaries');
+    $seedSelectionSource(12502, ['A' => [], 'B' => [], 'C' => []]);
+    $slowNow = 0.0;
+    $requests = [];
+    $slowFirst = $observeRun($makeSelectionService($selectionCatalog(['A' => 2, 'B' => 2, 'C' => 2]),
+        $fairDetails, $requests, imageResponse: static function () use (&$slowNow, $redImage): array {
+            $slowNow = 121.0;
+            return ['status' => 404, 'content_type' => 'image/png', 'body' => $redImage];
+        }, clock: static function () use (&$slowNow): float { return $slowNow; }),
+        $selectedOptions(12502, ['cover'], ['batch_limit' => 1]));
+    resumeExpect($slowFirst['result']['budget_scope'] === 'source' && $slowFirst['writes'] === 0
+        && $readSchedule(12502)['media_cursor'] === 'A' && $readSchedule(12502)['next_slot'] === 0
+        && (new StateStore())->read(12502)['cursor'] === '',
+        'entered slow media attempt must advance only its own attempt cursor before stopping');
+    $requests = [];
+    $slowSecond = $observeRun($makeSelectionService($selectionCatalog(['A' => 2, 'B' => 2, 'C' => 2]),
+        $fairDetails, $requests,
+        imageResponse: static fn(): array => ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage]),
+        $selectedOptions(12502, ['cover'], ['batch_limit' => 1]));
+    resumeExpect($slowSecond['result']['status'] === 'ok' && $requests['detail'] === 1 && $requests['image'] === 1
+        && $sourceRows(12502)[0]['cover'] === '/local-fixture.png'
+        && $sourceRows(12502)[1]['cover'] !== '/local-fixture.png' && $readSchedule(12502)['media_cursor'] === 'B',
+        'a slow failed image blocked the next media product on the following run');
+    foreach (['credentials', 'schema'] as $index => $failureKind) {
+        $sourceId = 12510 + $index;
+        $seedSelectionSource($sourceId, ['A' => []]);
+        $before = $sourceRows($sourceId);
+        $requests = [];
+        $invalidDetail = $observeRun($makeSelectionService($selectionCatalog(['A' => 2]), $fairDetails, $requests,
+            imageResponse: static fn(): array => throw new \RuntimeException('invalid detail requested an image'),
+            detailReply: static fn(): array => ['status' => $failureKind === 'credentials' ? 401 : 200,
+                'content_type' => 'application/json', 'body' => '{"code":200,"data":{"code":"A","stock":2}}']),
+            $selectedOptions($sourceId, Options::SYNC_FIELDS));
+        resumeExpect($invalidDetail['result']['status'] === 'partial' && $invalidDetail['result']['failed'] === 1
+            && $invalidDetail['writes'] === 0 && $sourceRows($sourceId) === $before
+            && $requests === ['catalog' => 1, 'detail' => 1, 'other' => 0, 'image' => 0]
+            && $fieldSync($invalidDetail['result'], 4)['noncover_saved'] === 0,
+            'detail credentials/schema failure must remain a unique zero-write product failure');
+    }
+    $seedSelectionSource(12512, ['A' => ['config' => Ini::toConfig($localConfig)]]);
+    $before = $sourceRows(12512)[0];
+    $requests = [];
+    $heldWithMedia = $observeRun($makeSelectionService($selectionCatalog(['A' => 2]),
+        ['A' => ['cover' => '/fixture-cover.png'] + $selectionDetail('A', $remoteConfig)], $requests,
+        imageResponse: static fn(): array => ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage]),
+        $selectedOptions(12512, ['options', 'cover']));
+    $heldFields = $fieldSync($heldWithMedia['result'], 4);
+    resumeExpect($heldWithMedia['result']['status'] === 'partial' && $heldWithMedia['result']['failed'] === 1
+        && $heldWithMedia['result']['selection_held'] === 1 && $heldWithMedia['result']['error_total'] === 1
+        && count($heldWithMedia['result']['errors']) === 1
+        && $heldFields['noncover_saved'] === 0 && $heldFields['media_refreshed'] === 1
+        && $sourceRows(12512) === [array_replace($before, ['cover' => $imagePath($redImage)])]
+        && $requests === ['catalog' => 1, 'detail' => 1, 'other' => 0, 'image' => 1],
+        'held options plus valid media repeated one selection error or wrote non-cover columns');
+    fwrite(STDOUT, "scheduled quota/save integration PASS: real image limits, generic stops, one detail, cover commits and cross-run opportunities\n");
 
     // Unknown sections are synthetic metadata, not alternative price fields.
     // These cases exercise effective gates and the normalized widget candidate
@@ -1640,7 +1966,7 @@ namespace {
         'detail' => ['widget' => '[{"name":"invalid-name","type":"text"}]'] + $changedDetail,
         'failed' => 1, 'applied' => 0, 'writes' => 0, 'images' => 0];
     $unknownCases[] = ['label' => 'invalid_draft_status', 'local' => $local, 'remote' => $upstream,
-        'detail' => ['draft_status' => 2] + $changedDetail, 'failed' => 1, 'applied' => 0, 'writes' => 0];
+        'detail' => ['draft_status' => 2] + $changedDetail, 'failed' => 1, 'applied' => 0, 'writes' => 0, 'images' => 0];
     foreach ($unknownCases as $index => $case) {
         $sourceId = 201 + $index;
         $seedSelectionSource($sourceId, ['A' => array_replace([
@@ -1950,7 +2276,8 @@ namespace {
     resumeExpect($consumerRejected === 8, 'core quote/submit prevalidation accepted a stale/missing selection or invalid count');
 
     // The approved existing-item policy is six fields, CNY, and twenty percent.
-    // Seed exactly two synthetic targets; never replay private production data.
+    // Seed two existing items in ordinary basic mode; the targeted CLI path is
+    // exercised separately below. Never replay private production data.
     $twentyFirstExpected = [
         'category' => ['Keep' => '12.00', 'Delete' => '24.00', 'Added' => '36.00'],
         'wholesale' => [10 => '9.60', 20 => '8.40', 30 => '7.20'],
@@ -2006,14 +2333,32 @@ namespace {
             'widget' => $phase >= 3 ? '[]' : $changedWidget, 'draft_status' => $phase >= 3 ? 0 : 1,
             'stock' => 19, 'shared_stock' => '[]', 'api_status' => 1,
         ]), $before);
+        // Initial basic saves split non-cover and cover; unchanged covers do
+        // not produce another SQL UPDATE in the later phases.
+        $expectedWrites = [4, 2, 0, 2, 0][$phase];
         resumeExpect($observed['result']['status'] === 'ok' && $observed['result']['failed'] === 0
             && ($observed['result']['selection_held'] ?? 0) === 0 && ($observed['result']['cover_failed'] ?? 0) === 0
             && $observed['result']['applied']['sync'] === 2 && $observed['result']['applied']['import'] === 0
-            && $observed['writes'] === (in_array($phase, [2, 4], true) ? 0 : 2)
+            && $observed['writes'] === $expectedWrites
             && $sourceRows(390) === $expected && DB::table('commodity')->count() === $twentyCount
             && $requests === ['catalog' => 1, 'detail' => 2, 'other' => 0, 'image' => 1]
             && DB::table('commodity')->where('shared_id', '!=', 390)->orderBy('id')->get()->toJson() === $twentyOtherSources,
-            'twenty-percent two-target full follow changed scope, costs, identity, paired controls or repeat pricing: phase ' . $phase);
+            'twenty-percent two-item basic full follow changed scope, costs, identity, paired controls or repeat pricing: '
+            . json_encode(['phase' => $phase, 'status' => $observed['result']['status'],
+                'failed' => $observed['result']['failed'],
+                'selection_held' => $observed['result']['selection_held'] ?? 0,
+                'cover_failed' => $observed['result']['cover_failed'] ?? 0,
+                'applied_sync' => $observed['result']['applied']['sync'],
+                'applied_import' => $observed['result']['applied']['import'],
+                'writes_actual' => $observed['writes'],
+                'writes_expected' => $expectedWrites,
+                'rows_equal' => $sourceRows(390) === $expected,
+                'row_count_equal' => DB::table('commodity')->count() === $twentyCount,
+                'requests' => $requests,
+                'other_sources_equal' => DB::table('commodity')->where('shared_id', '!=', 390)
+                    ->orderBy('id')->get()->toJson() === $twentyOtherSources,
+                'field_sync' => $observed['result']['field_sync'] ?? null,
+            ], JSON_THROW_ON_ERROR));
         foreach (Commodity::query()->where('shared_id', 390)->get() as $saved) {
             $parsed = clone $saved;
             $order->parseConfig($parsed, null);
@@ -2480,20 +2825,25 @@ namespace {
     $before = $sourceRows($compactSource);
     $categoriesBefore = DB::table('category')->orderBy('id')->get()->toJson();
     $stateBefore = $stateStore->read($compactSource);
+    $compactSchedulePath = $stateSite . '/runtime/extensions/PikaSupplySync/schedule-' . $compactSource . '.json';
+    resumeExpect(!file_exists($compactSchedulePath), 'compact dry-run fixture unexpectedly has an existing sidecar');
     $jobsBefore = file_exists($jobsPath) ? file_get_contents($jobsPath) : null;
     $requests = [];
     $preview = $observeRun($makeSelectionService($snapshot, $compactDetails, $requests, null, null, $expectCompact),
         $compactOptions(['dry_run' => true]));
-    resumeExpect($preview['result']['status'] === 'ok' && $preview['result']['planned']['sync'] === 15
+    resumeExpect($preview['result']['status'] === 'ok' && $preview['result']['planned']['sync'] === 20
+        && $fieldSync($preview['result'], 20)['trade_planned'] === 15
+        && $preview['result']['field_sync']['media_planned'] === 5
         && $preview['result']['planned']['import'] === 0 && $preview['writes'] === 0
         && $requests === ['catalog' => 1, 'detail' => 0, 'other' => 0]
-        && $sourceRows($compactSource) === $before && $stateStore->read($compactSource) === $stateBefore,
-        'compact stock-priority dry-run did not preserve 15 priority slots: ' . json_encode([
+        && $sourceRows($compactSource) === $before && $stateStore->read($compactSource) === $stateBefore
+        && !file_exists($compactSchedulePath),
+        'compact dry-run must plan 15 P plus 5 M actions without persisting a sidecar: ' . json_encode([
             'status' => $preview['result']['status'], 'planned' => $preview['result']['planned'] ?? null,
             'writes' => $preview['writes'], 'requests' => $requests,
             'rows_unchanged' => $sourceRows($compactSource) === $before,
             'cursor_unchanged' => $stateStore->read($compactSource) === $stateBefore], JSON_THROW_ON_ERROR));
-    // Keep the original 75% priority ceiling: fifteen mismatches plus five normal items fill twenty slots.
+    // Fifteen mismatches and five ordinary candidates exercise all five slots.
     DB::table('commodity')->where('shared_id', $compactSource)
         ->whereIn('shared_code', array_slice(array_keys($compactStocks), 15))->update(['stock' => 9]);
     $before = $sourceRows($compactSource);
@@ -2501,10 +2851,13 @@ namespace {
     $preview = $observeRun($makeSelectionService($snapshot, $compactDetails, $requests, null, null, $expectCompact),
         $compactOptions(['dry_run' => true]));
     resumeExpect($preview['result']['status'] === 'ok' && $preview['result']['planned']['sync'] === 20
+        && $fieldSync($preview['result'], 20)['trade_planned'] === 16
+        && $preview['result']['field_sync']['media_planned'] === 4
         && $preview['result']['planned']['import'] === 0 && $preview['writes'] === 0
         && $requests === ['catalog' => 1, 'detail' => 0, 'other' => 0]
-        && $sourceRows($compactSource) === $before && $stateStore->read($compactSource) === $stateBefore,
-        'compact dry-run did not plan 20 existing items without writes/cursor movement: ' . json_encode([
+        && $sourceRows($compactSource) === $before && $stateStore->read($compactSource) === $stateBefore
+        && !file_exists($compactSchedulePath),
+        'compact dry-run must plan 12 P, 4 O and 4 M actions without writes/cursor movement: ' . json_encode([
             'status' => $preview['result']['status'], 'planned' => $preview['result']['planned'] ?? null,
             'writes' => $preview['writes'], 'requests' => $requests,
             'rows_unchanged' => $sourceRows($compactSource) === $before,
@@ -2512,10 +2865,29 @@ namespace {
     $coverStatus = 200; $coverBytes = $redImage;
     $requests = [];
     $run = $observeRun($makeSelectionService($snapshot, $compactDetails, $requests, $serveCover, null, $expectCompact), $compactOptions());
-    resumeExpect($run['result']['status'] === 'ok' && $run['result']['applied']['sync'] === 20
+    resumeExpect($run['result']['status'] === 'ok' && $run['result']['applied']['sync'] === 16
         && $run['result']['applied']['import'] === 0 && $run['writes'] === 20
-        && $requests === ['catalog' => 1, 'detail' => 20, 'other' => 0, 'image' => 1],
-        'compact batch bypassed the original bounded per-item sync path');
+        && $fieldSync($run['result'], 20)['media_refreshed'] === 4
+        && $requests === ['catalog' => 1, 'detail' => 16, 'other' => 0, 'image' => 1],
+        'compact batch exceeded 20 total actions or fetched duplicate details across lanes');
+    foreach ($sourceRows($compactSource) as $index => $row) {
+        $expected = $before[$index];
+        if ($index < 12 || ($index >= 15 && $index < 19)) {
+            $expected = array_replace($expected, ['name' => 'Remote fixture ' . $row['shared_code'],
+                'description' => 'Remote fixture description', 'price' => 48, 'user_price' => 42,
+                'stock' => 9, 'shared_stock' => '[]', 'api_status' => 1,
+                'config' => Ini::toConfig(['category' => ['Basic' => '12.00'], 'category_cost' => ['Basic' => '10.00']])]);
+        }
+        if ($index < 4) $expected['cover'] = $imagePath($redImage);
+        resumeExpect($row === $expected, 'compact first batch changed an unselected lane or protected commodity field');
+    }
+    $requests = [];
+    $compactContinuation = $observeRun($makeSelectionService($snapshot, $compactDetails, $requests,
+        $serveCover, null, $expectCompact), $compactOptions(['batch_limit' => 40]));
+    resumeExpect($compactContinuation['result']['status'] === 'ok'
+        && $fieldSync($compactContinuation['result'], 40)['media_refreshed'] === 16
+        && $requests === ['catalog' => 1, 'detail' => 16, 'other' => 0, 'image' => 1],
+        'compact continuation failed to finish the remaining media tail with one detail per code');
     foreach ($sourceRows($compactSource) as $index => $row) {
         $code = $row['shared_code'];
         $config = Ini::toArray($row['config']);
@@ -2550,7 +2922,8 @@ namespace {
     DB::table('shared')->where('id', $compactSource)->update(['name' => 'renamed compact source',
         'app_key' => 'rotated-fixture-key', 'currency_rate' => '2']);
     $requests = [];
-    $renamed = $observeRun($makeSelectionService($snapshot, $compactDetails, $requests, $serveCover, null, $expectCompact), $compactOptions());
+    $renamed = $observeRun($makeSelectionService($snapshot, $compactDetails, $requests, $serveCover, null, $expectCompact),
+        $compactOptions(['batch_limit' => 40]));
     resumeExpect($renamed['result']['status'] === 'ok' && $renamed['result']['applied']['sync'] === 20
         && $sourceRows($compactSource)[0]['price'] === 96 && $sourceRows($compactSource)[0]['user_price'] === 84
         && Ini::toArray($sourceRows($compactSource)[0]['config'])['category']['Basic'] === '24.00',
@@ -2568,8 +2941,9 @@ namespace {
         $planner = new \Pika\LocalExtensions\PikaSupplySync\Service\CatalogPlanner();
         $legacyCatalog = $planner->flatten($selectionCatalog($stocks));
         $treeCatalog = (new \Pika\LocalExtensions\PikaSupplySync\Service\UpstreamCategoryTree())->flatten($compactSnapshot($stocks));
-        $expectedPlan = $planner->plan($legacyCatalog, $local, $state['cursor'], $planOptions, $state['priority_cursor']);
-        resumeExpect($planner->plan($treeCatalog, $local, $state['cursor'], $planOptions, $state['priority_cursor']) === $expectedPlan,
+        $currentSchedule = $readSchedule($compactSource);
+        $expectedPlan = $planner->plan($legacyCatalog, $local, $state['cursor'], $planOptions, $state['priority_cursor'], [], $currentSchedule);
+        resumeExpect($planner->plan($treeCatalog, $local, $state['cursor'], $planOptions, $state['priority_cursor'], [], $currentSchedule) === $expectedPlan,
             'compact changed legitimate removal, stock-zero, fuse or cursor semantics');
         $observed = $observeRun($service, $planOptions);
         resumeExpect($observed['result']['planned'] === $expectedPlan['counts']
@@ -2639,7 +3013,7 @@ namespace {
         && DB::table('category')->orderBy('id')->get()->toJson() === $categoriesBefore,
         'basic compact routing mutated category map, jobs or category rows');
 
-    fwrite(STDOUT, "local supply SyncService resume PASS; compact stock-priority dry-run=15; compact dry-run=20; compact detail batch=20; compact failures=13; selection cases=6; price/specification runs=7; image runs=13; unknown metadata runs="
+    fwrite(STDOUT, "local supply SyncService resume PASS; compact stock-priority actions=15P+5M; compact mixed actions=12P+4O+4M; compact first details=16; compact media continuation=16; compact failures=13; selection cases=6; price/specification runs=7; image runs=13; unknown metadata runs="
         . count($unknownCases) . '; config ownership runs=' . $followRuns
         . '; twenty-percent two-target runs=' . $twentyRuns
         . '; targeted runs=' . $targetRuns

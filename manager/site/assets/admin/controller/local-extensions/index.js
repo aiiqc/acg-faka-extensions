@@ -177,6 +177,7 @@
         const messages = new Set([
             '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理',
             '图片未刷新：已保留原图，其他字段仍按有效开关和安全门处理',
+            '图片配额已耗尽：保留原图，其他有效字段继续按时间和文本预算处理',
             '单货源预算已耗尽', '本轮预算已耗尽', '远端返回业务失败', '远端凭据验证失败',
             '远端商品不可用', '远端商品详情无效', '远端 HTTPS 请求失败', '同步失败，原因未分类',
             '货源同步失败，未执行商品写入',
@@ -265,6 +266,16 @@
             block.append(node('p', 'mb-1', `${label}：${outcome}`),
                 node('p', 'text-muted mb-1', `${time}（${zone}） · ${mode}${entry.origin === 'state' ? ' · 来自每源历史状态，日志可能已截断' : ''}`));
             block.append(node('p', 'mb-0', `计划 ${count(entry.planned)}；同步保存 ${count(applied.sync)}；新建 ${count(applied.import)}；库存清零 ${count(applied.zero)}；未知库存保护 ${count(applied.held_unknown)}；失败／待确认 ${count(entry.failed)}`));
+            if (object(entry.field_sync)) {
+                const fields = entry.field_sync;
+                const fieldCount = key => Number.isInteger(fields[key]) && fields[key] >= 0 && fields[key] <= 500
+                    ? String(fields[key]) : '未知';
+                block.append(node('p', 'mb-0', `常规计划动作 ${fieldCount('trade_planned')}；非图片保存 ${fieldCount('noncover_saved')}；媒体已复查 ${fieldCount('media_attempted')}／${fieldCount('media_planned')}；已刷新 ${fieldCount('media_refreshed')}；失败 ${fieldCount('media_failed')}；未完成 ${fieldCount('media_deferred')}`),
+                    node('p', 'text-muted mb-0', '常规与媒体计划动作可重叠同一商品。非图片保存按不同商品计数，可能来自媒体首次详情，不代表价格、库存、规格全部成功；媒体刷新也不代表六项字段全部成功。媒体已复查表示动作已开始；未完成仅指本批已选媒体，含配额、时间或安全门限制，不是全目录积压，也未建立补查任务。'),
+                    node('p', 'text-muted mb-0', `图片配额影响：${mapped({none: '本批未触发限制', source: '本货源媒体受限', round: '本轮媒体受限'}, fields.image_quota_scope, '未知')}。图片配额不等于时间预算耗尽；记录不代表完整覆盖或时限保证。`));
+            } else {
+                block.append(node('p', 'text-muted mb-0', '字段分层：未记录；非图片保存与媒体复查结果未知。'));
+            }
             if (selectedUnknown || (Number.isInteger(entry.catalog_unknown) && entry.catalog_unknown > 0 && entry.catalog_unknown <= 10000)) {
                 block.append(node('p', 'text-warning mb-0', `目录库存未知 ${count(entry.catalog_unknown)} 项（整份目录）；本批选中未知库存 ${count(entry.planned_held_unknown)} 项。保护计数包含详情转为未知的项；未知库存项保留本地，不清零、不保存商品。`));
             }

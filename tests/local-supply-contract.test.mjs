@@ -27,7 +27,7 @@ test('declares a LocalExtensions package and no official plugin lifecycle', () =
         assert.equal(setting.type, 'checkbox');
         assert.equal(Object.hasOwn(setting, 'default'), false, 'legacy selection must remain absent');
     }
-    assert.equal(manifest.version, '1.1.19');
+    assert.equal(manifest.version, '1.1.20');
     assert.equal(manifest.namespace, 'Pika\\LocalExtensions\\PikaSupplySync\\');
     assert.equal(manifest.bootstrap, 'bootstrap.php');
     assert.deepEqual(manifest.hooks, []);
@@ -515,7 +515,8 @@ test('keeps full/basic, stock priority and zero percent default behavior', () =>
     assert.match(planner, /\$priority\[\]\s*=\s*\$code/);
     assert.match(planner, /floor\(\$options->batchLimit \* 0\.75\)/);
     assert.match(planner, /next_priority_cursor/);
-    assert.match(planner, /\$type = 'zero'/);
+    assert.match(planner, /private function actionType\(/);
+    assert.match(planner, /return \(\$remote === null \? \$fuse : \$explicitZeroFuse\) && \(int\)\$row\['stock'\] > 0\s*\? 'hold_zero' : 'zero'/);
     assert.doesNotMatch(planner, /autoOffline|restore|offline/);
     assert.match(planner, /\$options->mode === Options::MODE_FULL/);
 

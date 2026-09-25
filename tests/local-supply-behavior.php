@@ -3309,6 +3309,56 @@ $fairSourceBudget->beginSource(2);
 $fairSourceBudget->reserveImage();
 $fairSourceBudget->endSource();
 
+$expectBudgetResource = static function (callable $action, string $scope, string $resource): void {
+    try {
+        $action();
+    } catch (BudgetExceeded $failure) {
+        expect($failure->scope === $scope && $failure->isSource() === ($scope === 'source')
+            && $failure->resource === $resource
+            && $failure->isImageQuota() === ($resource !== 'generic'),
+            'budget resource classification or existing scope changed');
+        return;
+    }
+    throw new RuntimeException('expected budget resource failure was not raised');
+};
+foreach (['source' => 25, 'round' => 100] as $scope => $imageLimit) {
+    $reasonBudget = new RunBudget(static fn(): float => 0.0);
+    if ($scope === 'source') $reasonBudget->beginSource(1);
+    for ($index = 0; $index < $imageLimit; $index++) $reasonBudget->reserveImage();
+    $expectBudgetResource(static fn() => $reasonBudget->reserveImage(), $scope, 'image_count');
+}
+foreach (['source' => 26214400, 'round' => 52428800] as $scope => $byteLimit) {
+    $reasonBudget = new RunBudget(static fn(): float => 0.0);
+    if ($scope === 'source') $reasonBudget->beginSource(1);
+    $reasonBudget->consumeImage($byteLimit);
+    $expectBudgetResource(static fn() => $reasonBudget->consumeImage(1), $scope, 'image_bytes');
+}
+foreach (['source' => 5242880, 'round' => 10485760] as $scope => $byteLimit) {
+    $reasonBudget = new RunBudget(static fn(): float => 0.0);
+    if ($scope === 'source') $reasonBudget->beginSource(1);
+    $reasonBudget->consumeText($byteLimit);
+    $expectBudgetResource(static fn() => $reasonBudget->consumeText(1), $scope, 'generic');
+}
+foreach (['source' => 120.0, 'round' => 300.0] as $scope => $deadline) {
+    $reasonNow = 0.0;
+    $reasonBudget = new RunBudget(static function () use (&$reasonNow): float { return $reasonNow; });
+    if ($scope === 'source') $reasonBudget->beginSource(1);
+    $reasonNow = $deadline;
+    $expectBudgetResource(static fn() => $reasonBudget->checkpoint(), $scope, 'generic');
+}
+$reasonNow = 0.0;
+$reasonBudget = new RunBudget(static function () use (&$reasonNow): float { return $reasonNow; });
+$reasonBudget->beginSource(1);
+$reasonNow = 119.9995;
+$expectBudgetResource(static fn() => $reasonBudget->remainingMilliseconds(), 'source', 'generic');
+$legacyBudgetFailure = new BudgetExceeded('source', 'synthetic legacy budget', ['stage' => 'catalog']);
+expect($legacyBudgetFailure->resource === 'generic' && !$legacyBudgetFailure->isImageQuota()
+    && $legacyBudgetFailure->safeDiagnostics['stage'] === 'catalog',
+    'three-argument budget construction or diagnostics compatibility changed');
+fails(static fn() => new BudgetExceeded('source', 'synthetic invalid resource', null, 'text'),
+    'unknown budget resource must be rejected');
+fwrite(STDOUT, "budget resource reasons PASS: four image limits, generic time/text and legacy diagnostics\n");
+
 $coverSource = new \App\Model\Shared();
 $coverSource->domain = 'https://example.com';
 $coverBudget = new RunBudget();
@@ -3356,6 +3406,153 @@ $rotation->markSourceAttempted(1);
 expect($rotation->orderSources([1, 2, 3]) === [2, 3, 1], 'source rotation did not advance after source one');
 $rotation->markSourceAttempted(3);
 expect($rotation->orderSources([1, 2, 3]) === [1, 2, 3], 'source rotation did not wrap after source three');
+
+$scheduleStore = new StateStore();
+$scheduleSourceId = 120001;
+$scheduleDirectory = LocalPath::directory('runtime/local-extensions/extensions/PikaSupplySync', 0700);
+$schedulePath = $scheduleDirectory . '/schedule-' . $scheduleSourceId . '.json';
+$scheduleLegacyPath = $scheduleDirectory . '/source-' . $scheduleSourceId . '.json';
+$scheduleFingerprint = hash('sha256', 'synthetic-schedule-source-context');
+$scheduleLegacy = $scheduleStore->read($scheduleSourceId);
+$scheduleDefault = $scheduleStore->readSchedule($scheduleSourceId, $scheduleLegacy, $scheduleFingerprint);
+$expectedScheduleBasis = hash('sha256', json_encode(
+    ['source_fingerprint' => $scheduleFingerprint, 'legacy_state' => $scheduleLegacy],
+    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+));
+expect($scheduleDefault === ['schema' => 1, 'media_cursor' => '', 'next_slot' => 0,
+    'basis_hash' => $expectedScheduleBasis] && !file_exists($schedulePath) && !file_exists($scheduleLegacyPath),
+    'missing sidecar must return a bound default without creating either state file');
+$scheduleLegacy['cursor'] = '0001';
+$scheduleLegacy['priority_cursor'] = 'P';
+$scheduleLegacy['categories'] = ['category:' . hash('sha256', 'synthetic-category') => 12, '__root__' => 11];
+$scheduleLegacy['catalog_hash'] = hash('sha256', 'synthetic-catalog');
+$scheduleLegacy['last_run'] = '2026-09-25 12:30:00';
+$scheduleLegacy['last_result'] = [
+    'status' => 'partial', 'catalog_total' => 3, 'catalog_unknown' => 1,
+    'planned' => ['sync' => 1, 'import' => 0, 'zero' => 0, 'hold_zero' => 1, 'held_unknown' => 1],
+    'applied' => ['sync' => 1, 'import' => 0, 'zero' => 0, 'held_race' => 0,
+        'already_managed' => 0, 'held_existing_unmanaged' => 0, 'held_unknown' => 1],
+    'failed' => 1, 'mass_zero_fuse' => true,
+];
+$scheduleStore->write($scheduleSourceId, $scheduleLegacy);
+$scheduleLegacyBytes = file_get_contents($scheduleLegacyPath);
+$scheduleCandidate = array_replace($scheduleDefault, ['media_cursor' => '0002', 'next_slot' => 4]);
+$scheduleStore->writeSchedule($scheduleSourceId, $scheduleLegacy, $scheduleFingerprint, $scheduleCandidate);
+$scheduleSaved = $scheduleStore->readSchedule($scheduleSourceId, $scheduleLegacy, $scheduleFingerprint);
+$scheduleBytes = file_get_contents($schedulePath);
+clearstatcache(true, $schedulePath);
+expect($scheduleSaved['media_cursor'] === '0002' && $scheduleSaved['next_slot'] === 4
+    && $scheduleSaved['basis_hash'] !== $scheduleDefault['basis_hash']
+    && array_keys($scheduleSaved) === ['schema', 'media_cursor', 'next_slot', 'basis_hash']
+    && (fileperms($schedulePath) & 0777) === 0600
+    && fileowner($schedulePath) === \Pika\LocalExtensions\Manager\PathGuard::runtimeOwner()
+    && strlen($scheduleBytes) <= 1024 && file_get_contents($scheduleLegacyPath) === $scheduleLegacyBytes
+    && $scheduleStore->read($scheduleSourceId) === $scheduleLegacy,
+    'sidecar write must bind the new basis, preserve the complete legacy schema and use private bounded storage');
+$scheduleReorderedLegacy = array_reverse($scheduleLegacy, true);
+$scheduleReorderedLegacy['categories'] = array_reverse($scheduleLegacy['categories'], true);
+expect($scheduleStore->readSchedule($scheduleSourceId, $scheduleReorderedLegacy, $scheduleFingerprint) === $scheduleSaved,
+    'basis must be stable for equivalent normalized state and category map ordering');
+$scheduleOldLegacy = $scheduleStore->read(120002);
+unset($scheduleOldLegacy['priority_cursor']);
+expect($scheduleStore->readSchedule(120002, $scheduleOldLegacy, $scheduleFingerprint)
+    === $scheduleStore->readSchedule(120002, $scheduleStore->read(120002), $scheduleFingerprint),
+    'legacy state normalization must retain missing priority cursor compatibility in the basis');
+$scheduleChangedLegacy = $scheduleLegacy;
+$scheduleChangedLegacy['cursor'] = '0003';
+foreach ([[$scheduleChangedLegacy, $scheduleFingerprint], [$scheduleLegacy, hash('sha256', 'new-source-context')]]
+    as [$changedLegacy, $changedFingerprint]) {
+    $scheduleInvalidated = $scheduleStore->readSchedule($scheduleSourceId, $changedLegacy, $changedFingerprint);
+    expect($scheduleInvalidated['media_cursor'] === '' && $scheduleInvalidated['next_slot'] === 0
+        && $scheduleInvalidated['basis_hash'] !== $scheduleSaved['basis_hash']
+        && file_get_contents($schedulePath) === $scheduleBytes
+        && file_get_contents($scheduleLegacyPath) === $scheduleLegacyBytes,
+        'basis mismatch must rebuild only the returned schedule without writing either file');
+}
+$scheduleStore->write($scheduleSourceId, $scheduleChangedLegacy);
+$scheduleStore->writeSchedule($scheduleSourceId, $scheduleChangedLegacy, $scheduleFingerprint, $scheduleSaved);
+$scheduleSaved = $scheduleStore->readSchedule($scheduleSourceId, $scheduleChangedLegacy, $scheduleFingerprint);
+expect($scheduleSaved['media_cursor'] === '0002' && $scheduleSaved['next_slot'] === 4,
+    'successful legacy-first update must rebind the persisted schedule without dropping its cursor');
+$scheduleBytes = file_get_contents($schedulePath);
+$invalidSchedules = [
+    array_replace($scheduleSaved, ['schema' => 2]),
+    array_replace($scheduleSaved, ['schema' => '1']),
+    array_replace($scheduleSaved, ['media_cursor' => 12]),
+    array_replace($scheduleSaved, ['media_cursor' => str_repeat('A', 65)]),
+    array_replace($scheduleSaved, ['media_cursor' => "bad cursor"]),
+    array_replace($scheduleSaved, ['media_cursor' => "bad\x7fcursor"]),
+    array_replace($scheduleSaved, ['next_slot' => '1']),
+    array_replace($scheduleSaved, ['next_slot' => -1]),
+    array_replace($scheduleSaved, ['next_slot' => 5]),
+    array_replace($scheduleSaved, ['basis_hash' => str_repeat('A', 64)]),
+    array_replace($scheduleSaved, ['basis_hash' => 'invalid']),
+    $scheduleSaved + ['unexpected' => true],
+    array_diff_key($scheduleSaved, ['schema' => true]),
+];
+foreach ($invalidSchedules as $invalidSchedule) {
+    fails(static fn() => $scheduleStore->writeSchedule($scheduleSourceId, $scheduleChangedLegacy,
+        $scheduleFingerprint, $invalidSchedule), 'invalid schedule writer input must fail closed');
+    expect(file_get_contents($schedulePath) === $scheduleBytes, 'invalid writer input changed the sidecar');
+}
+foreach (['', 'invalid', str_repeat('A', 64)] as $invalidFingerprint) {
+    fails(static fn() => $scheduleStore->readSchedule($scheduleSourceId, $scheduleChangedLegacy, $invalidFingerprint),
+        'invalid source fingerprint must fail closed on read');
+    fails(static fn() => $scheduleStore->writeSchedule($scheduleSourceId, $scheduleChangedLegacy,
+        $invalidFingerprint, $scheduleSaved), 'invalid source fingerprint must fail closed on write');
+}
+foreach (array_merge(['{', 'null', '[]', str_repeat('x', 1025)], array_map(
+    static fn(array $value): string => json_encode($value, JSON_THROW_ON_ERROR), $invalidSchedules,
+)) as $invalidScheduleBytes) {
+    file_put_contents($schedulePath, $invalidScheduleBytes);
+    fails(static fn() => $scheduleStore->readSchedule($scheduleSourceId, $scheduleChangedLegacy, $scheduleFingerprint),
+        'malformed or oversized persisted sidecar must fail closed');
+}
+file_put_contents($schedulePath, $scheduleBytes);
+chmod($schedulePath, 0644);
+fails(static fn() => $scheduleStore->readSchedule($scheduleSourceId, $scheduleChangedLegacy, $scheduleFingerprint),
+    'non-private sidecar read must fail closed');
+fails(static fn() => $scheduleStore->writeSchedule($scheduleSourceId, $scheduleChangedLegacy,
+    $scheduleFingerprint, $scheduleSaved), 'non-private sidecar must not be silently replaced');
+chmod($schedulePath, 0600);
+$scheduleLinkId = 120003;
+$scheduleLinkPath = $scheduleDirectory . '/schedule-' . $scheduleLinkId . '.json';
+foreach ([$schedulePath, $scheduleDirectory . '/missing-schedule-fixture'] as $scheduleLinkTarget) {
+    expect(symlink($scheduleLinkTarget, $scheduleLinkPath), 'unable to create schedule symlink fixture');
+    try {
+        fails(static fn() => $scheduleStore->readSchedule($scheduleLinkId, $scheduleLegacy, $scheduleFingerprint),
+            'regular and dangling sidecar symlinks must fail closed');
+        fails(static fn() => $scheduleStore->writeSchedule($scheduleLinkId, $scheduleLegacy,
+            $scheduleFingerprint, $scheduleSaved), 'sidecar writer must reject symlink targets');
+    } finally {
+        unlink($scheduleLinkPath);
+    }
+}
+expect(link($schedulePath, $scheduleLinkPath), 'unable to create schedule hardlink fixture');
+try {
+    fails(static fn() => $scheduleStore->readSchedule($scheduleLinkId, $scheduleLegacy, $scheduleFingerprint),
+        'sidecar hardlinks must fail closed');
+} finally {
+    unlink($scheduleLinkPath);
+}
+$scheduleStore->resetProgress($scheduleSourceId);
+$scheduleReset = $scheduleStore->read($scheduleSourceId);
+$scheduleExpectedReset = $scheduleStore->read(120002);
+$scheduleExpectedReset['categories'] = $scheduleLegacy['categories'];
+$scheduleResetDisk = json_decode(file_get_contents($schedulePath), true, 4, JSON_THROW_ON_ERROR);
+expect($scheduleReset === $scheduleExpectedReset
+    && $scheduleResetDisk === ['schema' => 1, 'media_cursor' => '', 'next_slot' => 0,
+        'basis_hash' => str_repeat('0', 64)]
+    && $scheduleStore->readSchedule($scheduleSourceId, $scheduleReset, $scheduleFingerprint)['basis_hash']
+        !== str_repeat('0', 64), 'reset must preserve category mappings and invalidate the separate schedule');
+$scheduleStore->write($scheduleSourceId, $scheduleLegacy);
+chmod($schedulePath, 0644);
+fails(static fn() => $scheduleStore->resetProgress($scheduleSourceId),
+    'reset must report its second-file failure instead of claiming success');
+expect($scheduleStore->read($scheduleSourceId) === $scheduleExpectedReset,
+    'second-file failure must leave the already-written legacy reset visible');
+chmod($schedulePath, 0600);
+fwrite(STDOUT, "schedule sidecar PASS: strict schema, stable basis, invalidation, private files and reset boundary\n");
 
 $widgetBudget = new RunBudget();
 $widgetItem = new RemoteItem(new ImageCache($http), $widgetBudget);
@@ -3706,6 +3903,152 @@ $fair = (new CatalogPlanner())->plan(
     Options::fromArray(['mode' => 'basic', 'batch_limit' => 4]),
 );
 expect(in_array(['type' => 'sync', 'code' => 'E', 'lane' => 'normal'], $fair['actions'], true), 'priority work must reserve normal rotation capacity');
+
+$scheduledPlanner = new CatalogPlanner();
+$scheduledCatalog = [];
+$scheduledLocal = [];
+foreach (range('A', 'J') as $scheduledCode) {
+    $scheduledCatalog[$scheduledCode] = ['code' => $scheduledCode, 'name' => $scheduledCode,
+        'category' => 'C', 'stock' => 2, 'item' => []];
+    $scheduledLocal[$scheduledCode] = ['id' => ord($scheduledCode), 'status' => 1,
+        'stock' => $scheduledCode < 'I' ? 1 : 2, 'managed' => true, 'inventory_sync' => 1,
+        'shared_amount_sync' => 1, 'shared_config_sync' => 1];
+}
+$scheduledOptions = static function (int $limit, ?array $fields = null): Options {
+    $config = ['mode' => 'basic', 'batch_limit' => $limit];
+    if ($fields !== null) {
+        foreach (Options::SYNC_FIELDS as $field) $config['sync_' . $field] = in_array($field, $fields, true);
+    }
+    return Options::fromArray($config);
+};
+$scheduledStart = ['media_cursor' => '', 'next_slot' => 0];
+$scheduledFive = $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, '', $scheduledOptions(5), '', [], $scheduledStart);
+expect(array_column($scheduledFive['actions'], 'lane') === ['priority', 'priority', 'priority', 'normal', 'media'],
+    'schedule must offer P/P/P/O/M');
+expect(array_column($scheduledFive['actions'], 'code') === ['A', 'B', 'C', 'I', 'A'],
+    'media must retain its independent pass through a persistent priority code');
+expect(array_column($scheduledFive['actions'], 'next_slot') === [1, 2, 3, 4, 0],
+    'each action must carry its own next opportunity');
+expect($scheduledFive['trade_planned'] === 4 && $scheduledFive['media_planned'] === 1 && $scheduledFive['counts']['sync'] === 5,
+    'all lane actions must share the existing counters and total action cap');
+expect($scheduledFive['next_cursor'] === 'I' && $scheduledFive['next_priority_cursor'] === 'C',
+    'scheduled trade cursors must end at the selected lane tails');
+$scheduledFour = $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, '', $scheduledOptions(4), '', [], $scheduledStart);
+expect(array_column($scheduledFour['actions'], 'lane') === ['priority', 'priority', 'priority', 'normal'],
+    'batch four must stop before the media opportunity');
+$scheduledResume = $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, $scheduledFour['next_cursor'],
+    $scheduledOptions(4), $scheduledFour['next_priority_cursor'], [],
+    ['media_cursor' => '', 'next_slot' => $scheduledFour['actions'][3]['next_slot']]);
+expect($scheduledResume['actions'][0] === ['type' => 'sync', 'code' => 'A', 'lane' => 'media', 'next_slot' => 0],
+    'the deferred media opportunity must lead the next batch');
+foreach ([1, 2, 3] as $scheduledLimit) {
+    $scheduledState = $scheduledStart;
+    $scheduledCursor = '';
+    $scheduledPriorityCursor = '';
+    $scheduledSawMedia = false;
+    for ($scheduledRound = 0; $scheduledRound < 4; $scheduledRound++) {
+        $scheduledSmall = $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, $scheduledCursor,
+            $scheduledOptions($scheduledLimit), $scheduledPriorityCursor, [], $scheduledState);
+        expect(count($scheduledSmall['actions']) <= $scheduledLimit
+            && $scheduledSmall['trade_planned'] + $scheduledSmall['media_planned'] === count($scheduledSmall['actions']),
+            'small batches must count every selected action against one cap');
+        $scheduledSeen = [];
+        foreach ($scheduledSmall['actions'] as $scheduledAction) {
+            expect($scheduledAction['lane'] !== 'priority', 'batch at most three must not introduce a priority lane');
+            $scheduledKey = $scheduledAction['lane'] . ':' . $scheduledAction['code'];
+            expect(!isset($scheduledSeen[$scheduledKey]), 'a lane cannot select the same code twice in one batch');
+            $scheduledSeen[$scheduledKey] = true;
+            $scheduledState['next_slot'] = $scheduledAction['next_slot'];
+            if ($scheduledAction['lane'] === 'media') {
+                $scheduledSawMedia = true;
+                $scheduledState['media_cursor'] = $scheduledAction['code'];
+            }
+        }
+        $scheduledCursor = $scheduledSmall['next_cursor'];
+        $scheduledPriorityCursor = $scheduledSmall['next_priority_cursor'];
+    }
+    expect($scheduledSawMedia, 'media must progress across small batch boundaries');
+}
+$scheduledTail = $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, 'I', $scheduledOptions(20), 'G', [],
+    ['media_cursor' => 'I', 'next_slot' => 0]);
+expect(array_column($scheduledTail['actions'], 'code') === ['H', 'J', 'J']
+    && array_column($scheduledTail['actions'], 'lane') === ['priority', 'normal', 'media'],
+    'each lane must stop at its tail without wrapping to fill the current batch');
+$scheduledCoverLocal = array_intersect_key($scheduledLocal, array_flip(['A', 'B']));
+foreach ($scheduledCoverLocal as &$scheduledRow) {
+    $scheduledRow['inventory_sync'] = 0;
+    $scheduledRow['shared_amount_sync'] = 0;
+}
+unset($scheduledRow);
+$scheduledCover = $scheduledPlanner->plan($scheduledCatalog, $scheduledCoverLocal, '', $scheduledOptions(10, ['cover']),
+    '', [], $scheduledStart);
+expect(array_column($scheduledCover['actions'], 'lane') === ['media', 'media'] && $scheduledCover['trade_planned'] === 0,
+    'cover-only selection must not schedule duplicate trade detail or housekeeping');
+$scheduledNoGates = $scheduledCoverLocal;
+foreach ($scheduledNoGates as &$scheduledRow) $scheduledRow['shared_config_sync'] = 0;
+unset($scheduledRow);
+expect($scheduledPlanner->plan($scheduledCatalog, $scheduledNoGates, '', $scheduledOptions(10, ['cover']),
+    '', [], $scheduledStart)['actions'] === [], 'all disabled lanes must finish without inventing work');
+foreach (['name', 'description'] as $scheduledField) {
+    $scheduledText = $scheduledPlanner->plan($scheduledCatalog, $scheduledCoverLocal, '',
+        $scheduledOptions(10, [$scheduledField]), '', [], $scheduledStart);
+    expect(array_column($scheduledText['actions'], 'lane') === ['normal', 'normal'] && $scheduledText['media_planned'] === 0,
+        'name and description must remain ordinary detail work');
+}
+$scheduledGateCatalog = [];
+$scheduledGateLocal = [];
+foreach (['A' => 2, 'E' => 0, 'U' => null, 'X' => 2, 'Z' => 0] as $scheduledCode => $scheduledStock) {
+    $scheduledGateCatalog[$scheduledCode] = ['code' => $scheduledCode, 'name' => $scheduledCode,
+        'category' => 'C', 'stock' => $scheduledStock, 'item' => []];
+    $scheduledGateLocal[$scheduledCode] = ['id' => ord($scheduledCode), 'status' => 1, 'stock' => 7,
+        'managed' => $scheduledCode !== 'X', 'inventory_sync' => $scheduledCode === 'E' ? 0 : 1,
+        'shared_amount_sync' => 1, 'shared_config_sync' => 1];
+}
+$scheduledGateLocal['M'] = ['id' => 500, 'status' => 1, 'stock' => 7, 'managed' => true,
+    'inventory_sync' => 1, 'shared_config_sync' => 1];
+$scheduledGateLocal['F'] = ['id' => 501, 'status' => 1, 'stock' => 7, 'managed' => true,
+    'inventory_sync' => 0, 'shared_config_sync' => 1];
+$scheduledGatePlan = $scheduledPlanner->plan($scheduledGateCatalog, $scheduledGateLocal, '',
+    Options::fromArray(['mode' => 'basic', 'batch_limit' => 20, 'zero_fuse_min' => 1, 'zero_fuse_percent' => 1]),
+    '', [], $scheduledStart);
+$scheduledMediaCodes = array_column(array_values(array_filter($scheduledGatePlan['actions'],
+    static fn(array $action): bool => $action['lane'] === 'media')), 'code');
+expect($scheduledMediaCodes === ['A', 'E'],
+    'media must reject unmanaged, unknown, missing and held-zero codes while retaining explicit-zero inventory-off sync');
+expect($scheduledGatePlan['counts']['held_unknown'] === 1 && $scheduledGatePlan['counts']['hold_zero'] === 2,
+    'scheduled held classifications must retain both existing zero fuses');
+$scheduledZeroPlan = $scheduledPlanner->plan($scheduledGateCatalog, $scheduledGateLocal, '',
+    Options::fromArray(['mode' => 'basic', 'batch_limit' => 20, 'zero_fuse_min' => 500]), '', [], $scheduledStart);
+expect($scheduledZeroPlan['counts']['zero'] === 2
+    && !in_array('F', array_column($scheduledZeroPlan['actions'], 'code'), true),
+    'real zero actions cannot enter media and missing inventory-off records remain excluded');
+foreach ([['mode' => 'basic', 'targets' => []], ['mode' => 'full', 'targets' => []],
+    ['mode' => 'basic', 'targets' => ['A', 'I']]] as $scheduledLegacyCase) {
+    $scheduledLegacyOptions = Options::fromArray(['mode' => $scheduledLegacyCase['mode'], 'batch_limit' => 5]);
+    $scheduledLegacy = $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, 'B', $scheduledLegacyOptions,
+        'C', $scheduledLegacyCase['targets']);
+    expect($scheduledLegacy === $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, 'B',
+        $scheduledLegacyOptions, 'C', $scheduledLegacyCase['targets'], null),
+        'null schedule must preserve the entire legacy result');
+    if ($scheduledLegacyCase['mode'] === 'full' || $scheduledLegacyCase['targets'] !== []) {
+        expect($scheduledLegacy === $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, 'B',
+            $scheduledLegacyOptions, 'C', $scheduledLegacyCase['targets'], $scheduledStart),
+            'target and full paths must ignore schedule without changing any result field');
+    }
+}
+$scheduledNumeric = $scheduledPlanner->plan(
+    [1001 => ['code' => '1001', 'stock' => 2], 1002 => ['code' => '1002', 'stock' => 2]],
+    [1001 => ['id' => 1001, 'status' => 1, 'stock' => 1, 'shared_config_sync' => 1],
+        1002 => ['id' => 1002, 'status' => 1, 'stock' => 2, 'shared_config_sync' => 1]],
+    '', $scheduledOptions(5), '', [], $scheduledStart);
+expect($scheduledNumeric['next_priority_cursor'] === '1001' && $scheduledNumeric['next_cursor'] === '1002',
+    'scheduled decimal codes must retain string cursors');
+foreach ($scheduledNumeric['actions'] as $scheduledAction) {
+    expect(is_string($scheduledAction['code']), 'every scheduled numeric code must remain a string');
+}
+expect($scheduledFive === $scheduledPlanner->plan($scheduledCatalog, $scheduledLocal, '', $scheduledOptions(5),
+    '', [], ['media_cursor' => '', 'next_slot' => '4']), 'malformed schedule slot must use the initial safe opportunity');
+fwrite(STDOUT, "fixed opportunity planner PASS: lane independence, caps, small batches, tails, gates, legacy parity and numeric codes\n");
 
 $syncReflection = new ReflectionClass(SyncService::class);
 $syncObject = $syncReflection->newInstanceWithoutConstructor();

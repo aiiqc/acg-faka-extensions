@@ -9,8 +9,15 @@ final class BudgetExceeded extends RuntimeException
 {
     public readonly ?array $safeDiagnostics;
 
-    public function __construct(public readonly string $scope, string $message, ?array $safeDiagnostics = null)
-    {
+    public function __construct(
+        public readonly string $scope,
+        string $message,
+        ?array $safeDiagnostics = null,
+        public readonly string $resource = 'generic',
+    ) {
+        if (!in_array($resource, ['generic', 'image_count', 'image_bytes'], true)) {
+            throw new RuntimeException('同步预算资源类型不正确');
+        }
         $this->safeDiagnostics = $safeDiagnostics === null ? null : UpstreamFailure::sanitize(
             ['category' => 'budget'] + $safeDiagnostics,
         );
@@ -20,6 +27,11 @@ final class BudgetExceeded extends RuntimeException
     public function isSource(): bool
     {
         return $this->scope === 'source';
+    }
+
+    public function isImageQuota(): bool
+    {
+        return in_array($this->resource, ['image_count', 'image_bytes'], true);
     }
 }
 
@@ -167,12 +179,12 @@ final class RunBudget
         if ($this->sourceId !== null) {
             $this->sourceImageDownloads++;
             if ($this->sourceImageDownloads > self::MAX_SOURCE_IMAGE_DOWNLOADS) {
-                throw new BudgetExceeded('source', '单一货源封面下载超过 25 张安全上限');
+                throw new BudgetExceeded('source', '单一货源封面下载超过 25 张安全上限', null, 'image_count');
             }
         }
         $this->imageDownloads++;
         if ($this->imageDownloads > self::MAX_IMAGE_DOWNLOADS) {
-            throw new BudgetExceeded('round', '单轮封面下载超过 100 张安全上限');
+            throw new BudgetExceeded('round', '单轮封面下载超过 100 张安全上限', null, 'image_count');
         }
     }
 
@@ -187,10 +199,10 @@ final class RunBudget
             $this->sourceImageBytes += $bytes;
         }
         if ($this->imageBytes > self::MAX_IMAGE_BYTES) {
-            throw new BudgetExceeded('round', '单轮封面下载超过 50MB 安全上限');
+            throw new BudgetExceeded('round', '单轮封面下载超过 50MB 安全上限', null, 'image_bytes');
         }
         if ($this->sourceId !== null && $this->sourceImageBytes > self::MAX_SOURCE_IMAGE_BYTES) {
-            throw new BudgetExceeded('source', '单一货源封面下载超过 25MB 安全上限');
+            throw new BudgetExceeded('source', '单一货源封面下载超过 25MB 安全上限', null, 'image_bytes');
         }
     }
 

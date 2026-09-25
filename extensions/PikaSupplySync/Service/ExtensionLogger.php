@@ -11,6 +11,7 @@ final class ExtensionLogger
     private const ERROR_MESSAGES = [
         '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理',
         '图片未刷新：已保留原图，其他字段仍按有效开关和安全门处理',
+        '图片配额已耗尽：保留原图，其他有效字段继续按时间和文本预算处理',
         '单货源预算已耗尽', '本轮预算已耗尽', '远端返回业务失败', '远端凭据验证失败',
         '远端商品不可用', '远端商品详情无效', '远端 HTTPS 请求失败', '同步失败，原因未分类',
         '货源同步失败，未执行商品写入',
@@ -108,6 +109,16 @@ final class ExtensionLogger
                 $value = $result[$key][$field] ?? null;
                 if (is_int($value) && $value >= 0 && $value <= 10000) $safe[$key][$field] = $value;
             }
+        }
+        if (is_array($result['field_sync'] ?? null) && !array_is_list($result['field_sync'])) {
+            $safe['field_sync'] = [];
+            foreach (['trade_planned', 'noncover_saved', 'media_planned', 'media_attempted',
+                'media_refreshed', 'media_failed', 'media_deferred'] as $key) {
+                $value = $result['field_sync'][$key] ?? null;
+                if (is_int($value) && $value >= 0 && $value <= 500) $safe['field_sync'][$key] = $value;
+            }
+            $scope = $result['field_sync']['image_quota_scope'] ?? null;
+            if (in_array($scope, ['none', 'source', 'round'], true)) $safe['field_sync']['image_quota_scope'] = $scope;
         }
         $ratio = $result['mass_zero_ratio'] ?? null;
         if ((is_int($ratio) || is_float($ratio)) && is_finite((float)$ratio) && $ratio >= 0 && $ratio <= 100) {

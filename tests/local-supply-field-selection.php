@@ -125,7 +125,8 @@ namespace {
         $followSetting = array_column(Registry::$supply['settings'], null, 'key')['follow_upstream_config'];
         $followSourceSetting = array_column(Registry::$supply['settings'], null, 'key')['follow_upstream_config_source_ids'];
         $followDefaults = ['follow_upstream_config_source_ids'=>'', 'follow_upstream_config'=>false];
-        fieldExpect($manifest['version'] === '1.1.19' && $followSetting['type'] === 'checkbox'
+        fieldExpect($manifest['version'] === '1.1.20', 'field-selection fixture requires the current SupplySync version');
+        fieldExpect($followSetting['type'] === 'checkbox'
             && $followSetting['default'] === false, 'config following must be an independent opt-in checkbox');
         fieldExpect($followSourceSetting['type'] === 'text' && $followSourceSetting['default'] === '',
             'config following must use an independent empty-by-default source list');

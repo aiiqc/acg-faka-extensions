@@ -40,7 +40,9 @@ namespace {
         expect($state['sources'][0][$kind]['catalog_unknown'] === 0
             && $state['sources'][0][$kind]['planned_held_unknown'] === 0
             && $state['sources'][0][$kind]['applied']['held_unknown'] === 0
-            && $state['sources'][0][$kind]['status'] === 'ok', 'legacy result changed when new counters were absent');
+            && $state['sources'][0][$kind]['status'] === 'ok'
+            && $state['sources'][0][$kind]['field_sync'] === null,
+            'legacy result changed or acquired field evidence when new counters were absent');
     }
     expect($state['sources'][0]['preview']['kind'] === 'preview', 'preview became actual');
     expect($state['sources'][0]['saved_batch']['applied']['sync'] === 3, 'newer persisted state hidden by old log');
@@ -182,6 +184,68 @@ namespace {
     expect($legacyDiagnostics['failed'] === 4 && $legacyDiagnostics['error_total'] === null
         && $legacyDiagnostics['errors'] === [] && $legacyDiagnostics['request_diagnostics'] === [],
         'old count-only history acquired inferred item causes');
+    $fieldSync = ['trade_planned' => 4, 'noncover_saved' => 5, 'media_planned' => 3, 'media_attempted' => 2,
+        'media_refreshed' => 1, 'media_failed' => 1, 'media_deferred' => 1, 'image_quota_scope' => 'source'];
+    $quotaMessage = '图片配额已耗尽：保留原图，其他有效字段继续按时间和文本预算处理';
+    $fieldEntry = array_replace($entry, ['status' => 'partial', 'field_sync' => $fieldSync,
+        'error_total' => 1, 'errors' => [['message' => $quotaMessage]]]);
+    put($directory . '/sync.log', $log($fieldEntry, '2026-09-25T02:00:00+00:00'));
+    $fieldStatus = SupplySyncStatus::snapshot()['sources'][0];
+    expect($fieldStatus['actual']['field_sync'] === $fieldSync
+        && $fieldStatus['actual']['errors'] === [['message' => $quotaMessage]]
+        && $fieldStatus['actual']['status'] === 'partial' && $fieldStatus['saved_batch']['field_sync'] === null,
+        'layered fields or image-quota literal lost their evidence boundary');
+    $projectRecord = new \ReflectionMethod(SupplySyncStatus::class, 'record');
+    $fieldProject = static fn(array $value, string $origin = 'log'): array =>
+        $projectRecord->invoke(null, $value, '2026-09-25T02:00:00+00:00', 'UTC', $origin);
+    expect($fieldProject($fieldEntry, 'state')['field_sync'] === null,
+        'legacy state must not acquire unsupported field-level evidence');
+    $fieldUnsafe = $fieldEntry;
+    $fieldUnsafe['field_sync']['secret'] = ['url' => 'secret-sentinel'];
+    expect($fieldProject($fieldUnsafe)['field_sync'] === $fieldSync
+        && !str_contains(json_encode($fieldProject($fieldUnsafe)), 'secret-sentinel'),
+        'manager field projection leaked an unknown nested key');
+    $fieldCountKeys = array_diff(array_keys($fieldSync), ['image_quota_scope']);
+    foreach ($fieldCountKeys as $key) {
+        foreach ([0, 500] as $value) {
+            $candidate = $fieldEntry;
+            $candidate['field_sync'][$key] = $value;
+            expect($fieldProject($candidate)['field_sync'][$key] === $value,
+                'manager rejected a valid field count boundary: ' . $key);
+        }
+        foreach ([-1, 501, '1', 1.0, true, null, []] as $value) {
+            $candidate = $fieldEntry;
+            $candidate['field_sync'][$key] = $value;
+            $projected = $fieldProject($candidate);
+            expect($projected['field_sync'][$key] === null && $projected['status'] === 'partial',
+                'manager fabricated or coerced a field count: ' . $key);
+        }
+        $candidate = $fieldEntry;
+        unset($candidate['field_sync'][$key]);
+        expect($fieldProject($candidate)['field_sync'][$key] === null,
+            'missing field count must remain unknown: ' . $key);
+    }
+    foreach (['none', 'source', 'round'] as $scope) {
+        $candidate = $fieldEntry;
+        $candidate['field_sync']['image_quota_scope'] = $scope;
+        expect($fieldProject($candidate)['field_sync']['image_quota_scope'] === $scope,
+            'manager lost a valid image quota scope');
+    }
+    foreach (['secret-sentinel', 0, false, [], null] as $scope) {
+        $candidate = $fieldEntry;
+        $candidate['field_sync']['image_quota_scope'] = $scope;
+        $projected = $fieldProject($candidate);
+        expect($projected['field_sync']['image_quota_scope'] === null
+            && !str_contains(json_encode($projected), 'secret-sentinel'), 'manager accepted an invalid quota scope');
+    }
+    foreach ([null, 'secret-sentinel', false, 1, [], [1]] as $value) {
+        $candidate = array_replace($entry, ['field_sync' => $value]);
+        expect($fieldProject($candidate)['field_sync'] === null, 'non-object field evidence must be unknown');
+    }
+    foreach (['error', 'partial', 'ok'] as $status) {
+        $candidate = array_replace($fieldEntry, ['status' => $status]);
+        expect($fieldProject($candidate)['status'] === $status, 'field evidence rewrote the recorded outcome');
+    }
     chmod($directory . '/sync.log', 0644);
     expect(SupplySyncStatus::snapshot()['availability'] === 'unavailable', 'unsafe mode accepted');
     chmod($directory . '/sync.log', 0600);
@@ -254,5 +318,36 @@ namespace {
     expect(!array_key_exists('catalog_unknown', $safe) && !array_key_exists('held_unknown', $safe['planned'])
         && !array_key_exists('held_unknown', $safe['applied']),
         'logger accepted invalid unknown-stock counters');
-    echo "PASS: missing/read-only, actual/preview/legacy, newer state, locked, zero, selection-held, unknown-stock, state roundtrip/strictness, logger whitelist, redaction, unsafe files, bounds\n";
+    $safe = $safeResult->invoke($logger, $fieldUnsafe);
+    expect($safe['field_sync'] === $fieldSync && $safe['errors'] === [['message' => $quotaMessage]]
+        && !str_contains(json_encode($safe), 'secret-sentinel'), 'logger field whitelist lost data or leaked secrets');
+    expect(!array_key_exists('field_sync', $safeResult->invoke($logger, $entry)),
+        'logger invented field counters for legacy results');
+    foreach ($fieldCountKeys as $key) {
+        foreach ([0, 500] as $value) {
+            $candidate = $fieldEntry;
+            $candidate['field_sync'][$key] = $value;
+            expect($safeResult->invoke($logger, $candidate)['field_sync'][$key] === $value,
+                'logger rejected a valid field count boundary: ' . $key);
+        }
+        foreach ([-1, 501, '1', 1.0, true, null, []] as $value) {
+            $candidate = $fieldEntry;
+            $candidate['field_sync'][$key] = $value;
+            $safe = $safeResult->invoke($logger, $candidate);
+            expect(!array_key_exists($key, $safe['field_sync']), 'logger accepted an invalid field count: ' . $key);
+        }
+    }
+    foreach (['none', 'source', 'round', 'secret-sentinel', 0, false, [], null] as $scope) {
+        $candidate = $fieldEntry;
+        $candidate['field_sync']['image_quota_scope'] = $scope;
+        $safe = $safeResult->invoke($logger, $candidate);
+        expect(in_array($scope, ['none', 'source', 'round'], true)
+            ? $safe['field_sync']['image_quota_scope'] === $scope
+            : !array_key_exists('image_quota_scope', $safe['field_sync']), 'logger accepted an invalid image quota scope');
+    }
+    foreach ([null, 'secret-sentinel', false, 1, [], [1]] as $value) {
+        $safe = $safeResult->invoke($logger, array_replace($entry, ['field_sync' => $value]));
+        expect(!array_key_exists('field_sync', $safe), 'logger accepted non-object field evidence');
+    }
+    echo "PASS: missing/read-only, actual/preview/legacy, newer state, locked, zero, selection-held, unknown-stock, layered fields, quota scopes, state roundtrip/strictness, logger whitelist, redaction, unsafe files, bounds\n";
 }
