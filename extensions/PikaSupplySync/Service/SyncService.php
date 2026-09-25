@@ -256,6 +256,8 @@ final class SyncService
                 'failed' => 0,
                 'cover_failed' => 0,
                 'errors' => [],
+                'error_total' => 0,
+                'errors_truncated' => false,
                 'mass_zero_fuse' => $plan['fuse'],
                 'mass_zero_ratio' => $plan['fuse_ratio'],
                 'next_cursor_hash' => $plan['next_cursor'] === ''
@@ -331,20 +333,16 @@ final class SyncService
                         $selectionHeld = in_array($outcome, ['partial_selection', 'held_selection'], true);
                         if ($selectionHeld) {
                             $result['failed']++;
-                            if (count($result['errors']) < 20) $result['errors'][] = [
-                                'code_hash' => substr(hash('sha256', $code), 0, 12),
-                                'message' => '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理',
-                            ];
+                            $this->recordError($result, $code,
+                                '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理');
                             $result['selection_held'] = ($result['selection_held'] ?? 0) + 1;
                         }
                         if ($coverFailed) {
                             $result['cover_failed']++;
                             // failed counts items, not independent field failures.
                             if (!$selectionHeld) $result['failed']++;
-                            if (count($result['errors']) < 20) $result['errors'][] = [
-                                'code_hash' => substr(hash('sha256', $code), 0, 12),
-                                'message' => '图片未刷新：已保留原图，其他字段仍按有效开关和安全门处理',
-                            ];
+                            $this->recordError($result, $code,
+                                '图片未刷新：已保留原图，其他字段仍按有效开关和安全门处理');
                         }
                     }
                     if ($lane === 'priority') {
@@ -360,29 +358,22 @@ final class SyncService
                     if ($exception->safeDiagnostics !== null) {
                         $result['failure_diagnostic'] = UpstreamFailure::sanitizeObservation($exception->safeDiagnostics);
                     }
-                    if (count($result['errors']) < 20) {
-                        $result['errors'][] = [
-                            'code_hash' => substr(hash('sha256', $code), 0, 12),
-                            'message' => $this->message($exception, $source),
-                        ];
-                    }
+                    $this->recordError($result, $code, $this->errorMessage($exception),
+                        $exception->safeDiagnostics ?? ['category' => 'budget']);
                     break;
                 } catch (\Throwable $exception) {
                     unset($result['failure_diagnostic']);
                     if ($exception instanceof UpstreamFailure) {
-                        // ImageCache may reuse another source's failed download. Keep only
-                        // its safe class here; timings/attempts belong to this source's collector.
-                        $result['failure_diagnostic'] = array_intersect_key(
-                            UpstreamFailure::sanitizeObservation($exception->diagnostics), array_flip(['category', 'stage']));
+                        $diagnostic = UpstreamFailure::sanitizeObservation($exception->diagnostics);
+                        // ImageCache may reuse another source's failed download. Its request
+                        // measurements belong only to that source's collector, never this item.
+                        $result['failure_diagnostic'] = ($diagnostic['stage'] ?? null) === 'image'
+                            ? array_intersect_key($diagnostic, array_flip(['category', 'stage'])) : $diagnostic;
                     }
                     $result['failed']++;
                     if ($coverFailed || $exception instanceof RemoteCoverUnavailable) $result['cover_failed']++;
-                    if (count($result['errors']) < 20) {
-                        $result['errors'][] = [
-                            'code_hash' => substr(hash('sha256', $code), 0, 12),
-                            'message' => $this->message($exception, $source),
-                        ];
-                    }
+                    $this->recordError($result, $code, $this->errorMessage($exception),
+                        $result['failure_diagnostic'] ?? ['category' => 'unknown']);
                     if ($targetHashes !== null) break;
                 }
             }
@@ -1019,6 +1010,9 @@ final class SyncService
                 $result['failure_diagnostic'] = UpstreamFailure::sanitizeObservation($budgetFailure->safeDiagnostics);
             }
         }
+        $this->recordError($result, null, $budgetFailure === null
+            ? '货源同步失败，未执行商品写入' : $this->errorMessage($budgetFailure),
+            $budgetFailure?->safeDiagnostics ?? $catalogDiagnostic ?? ['category' => $budgetFailure === null ? 'unknown' : 'budget']);
         $this->log($result);
         return $result;
     }
@@ -1030,8 +1024,37 @@ final class SyncService
         return $message === '' ? '同步失败，未返回具体原因' : $message;
     }
 
+    private function errorMessage(\Throwable $exception): string
+    {
+        if ($exception instanceof BudgetExceeded) return $exception->isSource() ? '单货源预算已耗尽' : '本轮预算已耗尽';
+        if (!$exception instanceof UpstreamFailure) return '同步失败，原因未分类';
+        return match ($exception->diagnostics['category']) {
+            'business' => '远端返回业务失败',
+            'credentials' => '远端凭据验证失败',
+            'item_unavailable' => '远端商品不可用',
+            'item_invalid' => '远端商品详情无效',
+            'unknown' => '同步失败，原因未分类',
+            default => '远端 HTTPS 请求失败',
+        };
+    }
+
+    /** Count events separately: one item can have both selection and cover errors. */
+    private function recordError(array &$result, ?string $code, string $message, ?array $diagnostics = null): void
+    {
+        $result['errors'] ??= [];
+        $result['error_total'] = ($result['error_total'] ?? 0) + 1;
+        if (count($result['errors']) < 20) {
+            $entry = ['message' => $message];
+            if ($code !== null) $entry['code_hash'] = substr(hash('sha256', $code), 0, 12);
+            if ($diagnostics !== null) $entry['diagnostics'] = $diagnostics;
+            $result['errors'][] = ExtensionLogger::sanitizeErrors([$entry])[0];
+        }
+        $result['errors_truncated'] = $result['error_total'] > count($result['errors']);
+    }
+
     private function log(array &$result): void
     {
+        $result += ['errors' => [], 'error_total' => 0, 'errors_truncated' => false];
         try {
             $result['phase'] = $this->phase;
             $remaining = $this->budget->diagnosticRemaining();
@@ -1041,8 +1064,6 @@ final class SyncService
         } catch (\Throwable) {
             // Diagnostic collection must not mask the original source outcome.
         }
-        $copy = $result;
-        unset($copy['errors']);
-        $this->logger->write($copy + $this->logContext);
+        $this->logger->write($result + $this->logContext);
     }
 }

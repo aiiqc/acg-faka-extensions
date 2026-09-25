@@ -142,3 +142,50 @@ test('manager UI retains catalog-only, historical success and error outcomes', {
   assert.match(failed, /目录响应结构不正确/);
   assert.doesNotMatch(failed, /部分完成|批次完成/);
 });
+
+test('manager UI separates failed products, diagnostic totals and upstream declarations', { timeout: 1000 }, async () => {
+  const text = await renderedStatus(statusEntry({
+    status: 'partial', failed: 2, error_total: 23, errors_truncated: true,
+    errors: [{ code_hash: 'abcdef123456', message: '远端返回业务失败', diagnostics: {
+      category: 'business', stage: 'detail', http_status: 200, curl_code: 0, attempts: 1,
+      response_structure: { business_code: -1, data_type: 'null' }, remote_reason: 'not_shared',
+      timings_ms: { connect: 9, tls: 17, first_byte: 43, total: 48 }, received_bytes: 62,
+    } }],
+  }));
+  assert.match(text, /失败／待确认 2/);
+  assert.match(text, /诊断事件总数 23；展示 1 条/);
+  assert.match(text, /记录已截断或有不可读条目/);
+  assert.match(text, /上游返回的声明，未核实根因：商品未共享/);
+  assert.match(text, /HTTP 200；业务码 -1/);
+  assert.match(text, /HTTP 200 不代表业务成功/);
+  assert.match(text, /DNS 未取得/);
+  assert.match(text, /各值从该次 curl 开始累计，不是独立阶段耗时/);
+  assert.match(text, /不含连接策略在 curl 外部执行的 DNS 查询/);
+});
+
+test('manager UI bounds item and request observations without displaying raw secrets', { timeout: 1000 }, async () => {
+  const request = { stage: 'detail', category: 'business', remote_reason: 'secret-sentinel',
+    response_structure: { business_code: 'secret-sentinel', data_type: 'secret-sentinel' },
+    attempt_history: Array.from({ length: 5 }, () => ({ http_status: 200, timings_ms: { total: 10 } })),
+  };
+  const text = await renderedStatus(statusEntry({ status: 'partial', failed: 4, error_total: 21, errors_truncated: true,
+    errors: Array.from({ length: 21 }, (_, index) => ({ code_hash: index === 20 ? 'ffffffffffff' : 'abcdef123456',
+      message: 'secret-sentinel', diagnostics: request })),
+    request_diagnostics: { detail: { count: 9, last: request, last_failure: request },
+      unexpected: { count: 999, last: request } },
+  }));
+  assert.doesNotMatch(text, /secret-sentinel|ffffffffffff/);
+  assert.match(text, /诊断事件总数 21；展示 20 条/);
+  assert.match(text, /详情请求次数 9/);
+  assert.match(text, /最近一次请求/);
+  assert.match(text, /最近一次失败请求/);
+  assert.doesNotMatch(text, /第 4 次尝试|第 5 次尝试/);
+  assert.match(text, /最近记录不是平均值、p95 或完整请求历史/);
+});
+
+test('manager UI keeps old failure counts when item details or timing evidence is absent', { timeout: 1000 }, async () => {
+  const text = await renderedStatus(statusEntry({ status: 'partial', failed: 4 }));
+  assert.match(text, /失败／待确认 4/);
+  assert.match(text, /未取得逐项诊断，不能从失败数推断原因/);
+  assert.doesNotMatch(text, /诊断事件总数 0|DNS 0|HTTP 0/);
+});

@@ -27,7 +27,7 @@ test('declares a LocalExtensions package and no official plugin lifecycle', () =
         assert.equal(setting.type, 'checkbox');
         assert.equal(Object.hasOwn(setting, 'default'), false, 'legacy selection must remain absent');
     }
-    assert.equal(manifest.version, '1.1.18');
+    assert.equal(manifest.version, '1.1.19');
     assert.equal(manifest.namespace, 'Pika\\LocalExtensions\\PikaSupplySync\\');
     assert.equal(manifest.bootstrap, 'bootstrap.php');
     assert.deepEqual(manifest.hooks, []);

@@ -1489,7 +1489,7 @@ foreach ([400, 401, 403, 404, 500, 520, 522, 525] as $terminalStatus) {
     expect($statusCalls === 1, "HTTP {$terminalStatus} must not retry");
     expect($statusSleeps === [], "HTTP {$terminalStatus} must not back off");
     expect(
-        $terminalMessage === '远端 HTTPS 请求失败'
+        $terminalMessage === '远端 HTTP 请求被拒绝'
             && !preg_match('/(?:TOPSECRET|retry\.invalid|app_key|secret|https?:)/i', $terminalMessage),
         "HTTP {$terminalStatus} failure must stay sanitized",
     );
@@ -1523,6 +1523,81 @@ foreach ([[502, 522], ['timeout', 525], [503, 200]] as $sequence) {
             && $attempt['elapsed_ms'] <= 480000, 'attempt outcome or timing was lost');
     }
 }
+
+// Convert only observed native fields and bind them to their own attempt.
+$curlMeasurements = new ReflectionMethod(SafeHttpClient::class, 'curlMeasurements');
+$measurementClient = new SafeHttpClient($policy);
+$nativeMeasurements = ['dns' => 0.0001, 'connect' => 0.012, 'tls' => 0.031,
+    'first_byte' => 0.08, 'total' => 0.1, 'received_bytes' => 321.0];
+$safeMeasurements = ['timings_ms' => ['dns' => 1, 'connect' => 12, 'tls' => 31,
+    'first_byte' => 80, 'total' => 100], 'received_bytes' => 321];
+expect($curlMeasurements->invoke($measurementClient, $nativeMeasurements) === $safeMeasurements,
+    'native curl milestones must remain cumulative milliseconds and exact downloaded bytes');
+expect($curlMeasurements->invoke($measurementClient, ['dns' => 0, 'connect' => 0.0,
+    'tls' => 0, 'first_byte' => 0, 'total' => 0, 'received_bytes' => 0.0]) === ['received_bytes' => 0],
+    'unreached native milestones were fabricated as completed zero-time phases');
+foreach (['1', false, null, [], (object)[], -1, NAN, INF, 481] as $invalidNativeTiming) {
+    expect($curlMeasurements->invoke($measurementClient, ['dns' => $invalidNativeTiming]) === [],
+        'invalid native timing was coerced, clamped or retained');
+}
+foreach (['1', false, null, [], (object)[], -1, NAN, INF, 1.5, 16842753] as $invalidNativeBytes) {
+    expect($curlMeasurements->invoke($measurementClient, ['received_bytes' => $invalidNativeBytes]) === [],
+        'invalid native downloaded-byte measurement was coerced, clamped or retained');
+}
+expect($curlMeasurements->invoke($measurementClient, ['total' => 480, 'received_bytes' => 16842752.0])
+    === ['timings_ms' => ['total' => 480000], 'received_bytes' => 16842752],
+    'native measurement upper bounds were lost');
+$measurementProperty = new ReflectionProperty(SafeHttpClient::class, 'diagnostics');
+$measurementCalls = 0;
+$measurementSleeps = [];
+$measuredClient = null;
+$measuredClient = new SafeHttpClient($policy,
+    static function ($endpoint, $address) use (&$measuredClient, &$measurementCalls,
+        $measurementProperty, $safeMeasurements): array {
+        $measurementCalls++;
+        $current = $measurementProperty->getValue($measuredClient);
+        expect(!isset($current['timings_ms']) && !isset($current['received_bytes']),
+            'a new attempt inherited a previous attempt or request measurement');
+        // Simulate only the native observation boundary, not a transport-return extension.
+        if ($measurementCalls <= 2) {
+            $observed = $measurementCalls === 1 ? $safeMeasurements
+                : ['timings_ms' => ['connect' => 7, 'total' => 21], 'received_bytes' => 17];
+            $measurementProperty->setValue($measuredClient, $current + $observed);
+        }
+        if ($measurementCalls === 4) throw new RuntimeException('TOPSECRET');
+        return ['status' => $measurementCalls === 1 ? 503 : 200, 'content_type' => 'application/json',
+            'body' => '{}', 'connected_ip' => $address,
+            // Mock responses cannot fabricate measurements from unobserved native activity.
+            'timings_ms' => ['total' => 99], 'received_bytes' => 999];
+    }, null, static function (int $ms) use (&$measurementSleeps): void { $measurementSleeps[] = $ms; });
+$measuredClient->postJson('https://example.com/shared/commodity/items', [], []);
+$measured = $measuredClient->requestDiagnostics()['catalog']['last'];
+expect($measurementCalls === 2 && $measurementSleeps === [500] && $measured['attempts'] === 2
+    && $measured['attempt_history'][0]['timings_ms'] === $safeMeasurements['timings_ms']
+    && $measured['attempt_history'][0]['received_bytes'] === 321
+    && $measured['attempt_history'][1]['timings_ms'] === ['connect' => 7, 'total' => 21]
+    && $measured['attempt_history'][1]['received_bytes'] === 17
+    && $measured['timings_ms'] === $measured['attempt_history'][1]['timings_ms']
+    && $measured['received_bytes'] === 17,
+    'native measurements moved between attempts or changed retry behavior');
+foreach ([false, true] as $mockThrows) {
+    try { $measuredClient->postJson('https://example.com/shared/commodity/items', [], []); }
+    catch (UpstreamFailure $failure) { expect($mockThrows && $failure->diagnostics['category'] === 'unknown',
+        'measurement omission changed the original mock failure'); }
+    $missingMeasurement = $measuredClient->requestDiagnostics()['catalog']['last'];
+    expect(!isset($missingMeasurement['timings_ms']) && !isset($missingMeasurement['received_bytes'])
+        && !isset($missingMeasurement['attempt_history'][0]['timings_ms'])
+        && !isset($missingMeasurement['attempt_history'][0]['received_bytes'])
+        && $missingMeasurement['attempts'] === 1,
+        'a mock or exception inherited or invented native measurements');
+}
+$measurementProperty->setValue($measuredClient, $measuredClient->diagnostics() + $safeMeasurements);
+fails(static fn() => $measuredClient->postJson('https://example.com/shared/commodity/items', [], ['code' => []]),
+    'measurement pre-request fixture unexpectedly passed');
+$missingMeasurement = $measuredClient->requestDiagnostics()['catalog']['last'];
+expect($measurementCalls === 4 && !isset($missingMeasurement['timings_ms'])
+    && !isset($missingMeasurement['received_bytes']) && $missingMeasurement['attempts'] === 0,
+    'pre-request failure retained stale native measurements');
 
 // Retain a prior failure across a later success, with only three bounded stage slots.
 $summaryStatus = 525;
@@ -1591,7 +1666,7 @@ try {
 expect($terminalTransportCalls === 1, 'unclassified transport failure must not retry');
 expect($terminalTransportSleeps === [], 'unclassified transport failure must not back off');
 expect(
-    $terminalTransportMessage === '远端 HTTPS 请求失败'
+    $terminalTransportMessage === '远端请求失败'
         && !preg_match('/(?:TOPSECRET|terminal\.invalid|app_key|secret|https?:)/i', $terminalTransportMessage),
     'unclassified transport failure must stay sanitized',
 );
@@ -1810,7 +1885,7 @@ try {
 }
 expect($invalidJsonCalls === 1, 'invalid JSON must not retry');
 expect(
-    $invalidJsonMessage === '远端 HTTPS 请求失败' && !str_contains($invalidJsonMessage, 'TOPSECRET'),
+    $invalidJsonMessage === '远端响应 JSON 解析失败' && !str_contains($invalidJsonMessage, 'TOPSECRET'),
     'invalid JSON failure must remain sanitized',
 );
 
@@ -1975,6 +2050,85 @@ foreach ([200, 200.0, '200', ' 200 '] as $compatibleCode) {
     expect($responseData->invoke($gateway, ['code' => $compatibleCode, 'data' => []], 'fixture-safe-key') === [],
         'legacy successful business-code representation was rejected');
 }
+// A safe reason describes only the peer's exact declaration, never its raw text or proven cause.
+$officialReasons = [
+    '商户ID不存在' => 'merchant_unknown', '密钥错误' => 'signature_rejected',
+    '对接CODE不能为空' => 'code_missing', '商品不存在' => 'not_found',
+    '该商品未开放对接' => 'not_shared', '该商品暂未上架' => 'off_shelf',
+    'The current session is not secure. Please refresh the web page and try again.' => 'waf_rejected',
+    '商品暂时无法购买，请稍后重试' => 'upstream_unavailable',
+];
+$reasonEnvelope = [];
+$reasonCalls = 0;
+$reasonClient = new SafeHttpClient($policy,
+    static function ($endpoint, $address) use (&$reasonEnvelope, &$reasonCalls): array {
+        $reasonCalls++;
+        return ['status' => 200, 'content_type' => 'application/json', 'connected_ip' => $address,
+            'body' => json_encode($reasonEnvelope, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION)];
+    });
+$reasonGateway = new SharedGateway($reasonClient, $policy);
+$observeReasonFailure = static function (array $envelope) use (&$reasonEnvelope, $reasonClient,
+    $reasonGateway, $responseData): UpstreamFailure {
+    $reasonEnvelope = $envelope;
+    try {
+        $decoded = $reasonClient->postJson('https://example.com/shared/commodity/item', [], []);
+        $responseData->invoke($reasonGateway, $decoded, 'fixture-safe-key', true);
+    } catch (UpstreamFailure $failure) {
+        return $failure;
+    }
+    throw new RuntimeException('HTTP 200 was incorrectly accepted as business success');
+};
+foreach ($officialReasons as $message => $reason) {
+    $beforeReasonCalls = $reasonCalls;
+    $failure = $observeReasonFailure(['code' => 403, 'msg' => $message, 'data' => []]);
+    expect($failure->diagnostics['category'] === 'business'
+        && $failure->diagnostics['remote_reason'] === $reason
+        && $failure->getMessage() === '远端业务请求被拒绝'
+        && $failure->diagnostics['http_status'] === 200 && $failure->diagnostics['attempts'] === 1
+        && $failure->diagnostics['response_structure'] === ['business_code' => 403,
+            'data_type' => 'empty_array_or_object', 'data_count' => 0]
+        && $reasonCalls === $beforeReasonCalls + 1,
+        'exact remote declaration lost its safe reason or altered business/HTTP behavior');
+    foreach ([' ' . $message, $message . ' ', 'prefix' . $message, $message . 'suffix',
+        $message . ' TOPSECRET https://private.invalid'] as $unknownMessage) {
+        $unknownReason = $observeReasonFailure(['code' => 403, 'msg' => $unknownMessage, 'data' => []]);
+        expect($unknownReason->diagnostics['remote_reason'] === 'unknown'
+            && $unknownReason->getMessage() === '远端业务请求被拒绝'
+            && !str_contains(json_encode($unknownReason->diagnostics), 'TOPSECRET'),
+            'a remote prefix, suffix or appended secret was interpreted or exposed');
+    }
+    foreach ([['code' => 403, 'msg' => $message . ' fixture-safe-key', 'data' => []],
+        ['code' => 403, 'msg' => $message, 'data' => ['nested' => ['fixture-safe-key']]]] as $secretReply) {
+        $secretReason = $observeReasonFailure($secretReply);
+        expect($secretReason->diagnostics['category'] === 'schema'
+            && !isset($secretReason->diagnostics['remote_reason'])
+            && !isset($secretReason->diagnostics['response_structure']),
+            'secret-bearing response reached reason or shape projection before the secret gate');
+    }
+}
+foreach (['unrecognized TOPSECRET', null, false, true, 1, 1.5, [],
+    ['message' => '商品不存在'], (object)['message' => '商品不存在']] as $unknownMessage) {
+    $unknownReason = $observeReasonFailure(['code' => 403, 'msg' => $unknownMessage, 'data' => []]);
+    expect($unknownReason->diagnostics['remote_reason'] === 'unknown'
+        && $unknownReason->getMessage() === '远端业务请求被拒绝'
+        && !preg_match('/TOPSECRET|message|msg/', json_encode($unknownReason->diagnostics)),
+        'unknown or non-string remote message was converted into exposed information');
+}
+$missingReason = $observeReasonFailure(['code' => 403, 'data' => []]);
+expect($missingReason->diagnostics['remote_reason'] === 'unknown', 'missing remote message fabricated a reason');
+foreach ([-999999, 0, 999999, -1000000, 1000000, '403', 403.0] as $businessCode) {
+    $codeReason = $observeReasonFailure(['code' => $businessCode, 'msg' => '商品不存在', 'data' => []]);
+    $expectedCode = is_int($businessCode) && abs($businessCode) <= 999999 ? ['business_code' => $businessCode] : [];
+    expect($codeReason->diagnostics['remote_reason'] === 'not_found'
+        && $codeReason->diagnostics['response_structure'] === $expectedCode
+            + ['data_type' => 'empty_array_or_object', 'data_count' => 0],
+        'remote reason changed bounded business-code observation or response shape');
+}
+$reasonEnvelope = ['code' => 200, 'msg' => '商品不存在', 'data' => []];
+$decodedReasonSuccess = $reasonClient->postJson('https://example.com/shared/commodity/item', [], []);
+expect($responseData->invoke($reasonGateway, $decodedReasonSuccess, 'fixture-safe-key', true) === []
+    && !isset($reasonClient->diagnostics()['remote_reason']),
+    'later HTTP/business success inherited or inferred a remote failure reason');
 $failureCases = [
     ['transport', 200, '{}', 'application/json', 3, 'ITEM_DETAIL_TRANSPORT_FAILED'],
     ['unknown', 200, '{}', 'application/json', 1, 'ITEM_DETAIL_UNKNOWN_FAILED'],
@@ -2086,6 +2240,49 @@ expect(UpstreamFailure::sanitize(['category' => 'TOPSECRET', 'http_status' => 'h
     'curl_code' => [], 'attempts' => 100, 'elapsed_ms' => -1, 'body' => 'TOPSECRET']) === [
     'category' => 'unknown', 'http_status' => 0, 'curl_code' => 0, 'elapsed_ms' => 0, 'attempts' => 0,
 ], 'diagnostic whitelist accepted arbitrary values');
+
+foreach (['transport' => '远端 HTTPS 传输失败', 'http_retryable' => '远端 HTTP 服务暂时不可用',
+    'http_rejected' => '远端 HTTP 请求被拒绝', 'credentials' => '货源凭据无效',
+    'business' => '远端业务请求被拒绝', 'content_type' => '远端响应类型不正确',
+    'json' => '远端响应 JSON 解析失败', 'schema' => '远端响应结构不正确',
+    'response_size' => '远端响应超过安全大小限制', 'budget' => '请求剩余预算不足',
+    'item_unavailable' => '远端商品不可用', 'item_invalid' => '远端商品数据不正确',
+    'unknown' => '远端请求失败', 'TOPSECRET' => '远端请求失败'] as $category => $message) {
+    expect((new UpstreamFailure($category, ['message' => 'TOPSECRET', 'error' => 'https://private.invalid']))
+        ->getMessage() === $message, 'failure message was not the fixed category-specific safe text');
+}
+foreach (array_merge(['unknown'], array_values($officialReasons)) as $reason) {
+    expect(UpstreamFailure::sanitizeObservation(['remote_reason' => $reason]) === ['remote_reason' => $reason],
+        'safe remote reason did not survive observation sanitization');
+}
+foreach ([null, false, 1, [], (object)[], '商品不存在', 'not_found TOPSECRET'] as $invalidReason) {
+    expect(!isset(UpstreamFailure::sanitizeObservation(['remote_reason' => $invalidReason])['remote_reason']),
+        'invalid remote reason was retained or converted into a fabricated observation');
+}
+$safeTransfer = ['timings_ms' => ['dns' => 1, 'connect' => 5, 'tls' => 10, 'first_byte' => 20, 'total' => 30],
+    'received_bytes' => 123];
+expect(UpstreamFailure::sanitizeObservation($safeTransfer) === $safeTransfer
+    && UpstreamFailure::sanitize(['attempt_history' => [$safeTransfer]])['attempt_history'] === [$safeTransfer],
+    'transfer measurements lost their request or attempt association');
+foreach ([null, false, 1, 'TOPSECRET', [], (object)[], ['url' => 'TOPSECRET']] as $invalidTimings) {
+    expect(!isset(UpstreamFailure::sanitizeObservation(['timings_ms' => $invalidTimings])['timings_ms']),
+        'invalid timing object became an observation or leaked another field');
+}
+foreach (['1', 1.0, 0, false, null, [], (object)[], -1, 480001, NAN, INF] as $invalidTiming) {
+    $invalid = ['timings_ms' => ['dns' => $invalidTiming, 'url' => 'TOPSECRET']];
+    expect(!isset(UpstreamFailure::sanitizeObservation($invalid)['timings_ms'])
+        && UpstreamFailure::sanitize(['attempt_history' => [$invalid]])['attempt_history'] === [],
+        'invalid or unreached timing became an observation or leaked another key');
+}
+foreach (['1', 1.0, false, null, [], (object)[], -1, 16842753, NAN, INF] as $invalidBytes) {
+    $invalid = ['received_bytes' => $invalidBytes];
+    expect(!isset(UpstreamFailure::sanitizeObservation($invalid)['received_bytes'])
+        && UpstreamFailure::sanitize(['attempt_history' => [$invalid]])['attempt_history'] === [],
+        'invalid download byte count became an observation');
+}
+expect(UpstreamFailure::sanitizeObservation(['timings_ms' => ['total' => 480000], 'received_bytes' => 0])
+    === ['timings_ms' => ['total' => 480000], 'received_bytes' => 0],
+    'valid timing bound or measured zero download count was rejected');
 
 // Check the real write boundary, including malicious nested diagnostic input.
 $unsafeAttempt = ['category' => 'transport', 'http_status' => 0, 'curl_code' => 28,

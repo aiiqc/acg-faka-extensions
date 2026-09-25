@@ -9,6 +9,13 @@ final class SupplySyncStatus
     private const MAX_SOURCES = 100;
     private const MAX_LOG_BYTES = 2097152 + 65536;
     private const MAX_READ_BYTES = 8388608;
+    private const ERROR_MESSAGES = [
+        '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理',
+        '图片未刷新：已保留原图，其他字段仍按有效开关和安全门处理',
+        '单货源预算已耗尽', '本轮预算已耗尽', '远端返回业务失败', '远端凭据验证失败',
+        '远端商品不可用', '远端商品详情无效', '远端 HTTPS 请求失败', '同步失败，原因未分类',
+        '货源同步失败，未执行商品写入',
+    ];
     private int $remainingBytes = self::MAX_READ_BYTES;
 
     public static function snapshot(): array
@@ -118,7 +125,7 @@ final class SupplySyncStatus
         return ['source_id' => $id, 'actual' => null, 'preview' => null, 'unknown' => null, 'saved_batch' => null];
     }
 
-    /** Strict projection: never forward raw error messages, hashes, URLs or arbitrary keys. */
+    /** Strict projection: only fixed messages, bounded observations and product-code hashes. */
     private static function record(array $entry, string $time, string $zone, string $origin): ?array
     {
         if (!in_array($entry['status'] ?? null, ['ok', 'partial', 'error', 'locked', 'held_empty_catalog'], true)) {
@@ -162,25 +169,110 @@ final class SupplySyncStatus
             'catalog_unknown' => $unknown['catalog_unknown'],
             'planned_held_unknown' => $unknown['planned_held_unknown'],
             'failed' => $failed, 'selection_held' => $held,
+            'phase' => in_array($entry['phase'] ?? null, ['preflight', 'catalog', 'planning', 'actions'], true)
+                ? $entry['phase'] : null,
             'catalog_diagnostic' => $entry['status'] === 'error'
-                ? self::catalogDiagnostic($entry['catalog_diagnostic'] ?? null) : null,
-            'mass_zero_fuse' => ($entry['mass_zero_fuse'] ?? null) === true];
+                ? self::diagnostic($entry['catalog_diagnostic'] ?? null) : null,
+            'failure_diagnostic' => self::diagnostic($entry['failure_diagnostic'] ?? null),
+            'request_diagnostics' => self::requests($entry['request_diagnostics'] ?? null),
+            'mass_zero_fuse' => ($entry['mass_zero_fuse'] ?? null) === true] + self::errors($entry);
     }
 
-    /** Manager history remains readable with Supply disabled and without its autoloader. */
-    private static function catalogDiagnostic(mixed $value): ?array
+    /** Independent fixed projection: Supply may be disabled and its autoloader absent. */
+    private static function diagnostic(mixed $value, bool $attemptHistory = false): ?array
     {
         if (!is_array($value)) return null;
-        $category = $value['category'] ?? null;
-        $safe = ['category' => in_array($category, ['transport', 'http_retryable', 'http_rejected',
-            'credentials', 'business', 'content_type', 'json', 'schema', 'response_size', 'budget', 'unknown'], true)
-            ? $category : 'unknown'];
-        foreach (['http_status' => 599, 'curl_code' => 999, 'elapsed_ms' => 480000, 'attempts' => 3] as $key => $max) {
-            $number = $value[$key] ?? null;
-            $safe[$key] = is_int($number) && $number >= 0 && $number <= $max ? $number : 0;
+        $safe = [];
+        if (array_key_exists('category', $value)) {
+            $safe['category'] = in_array($value['category'], ['none', 'transport', 'http_retryable', 'http_rejected',
+                'credentials', 'business', 'content_type', 'json', 'schema', 'response_size', 'budget',
+                'unknown', 'item_unavailable', 'item_invalid'], true) ? $value['category'] : 'unknown';
         }
-        if ($safe['http_status'] < 100) $safe['http_status'] = 0;
+        if (in_array($value['stage'] ?? null, ['catalog', 'detail', 'image'], true)) $safe['stage'] = $value['stage'];
+        if (array_key_exists('remote_reason', $value)) {
+            $safe['remote_reason'] = in_array($value['remote_reason'], ['unknown', 'merchant_unknown', 'signature_rejected',
+                'code_missing', 'not_found', 'not_shared', 'off_shelf', 'waf_rejected', 'upstream_unavailable'], true)
+                ? $value['remote_reason'] : 'unknown';
+        }
+        foreach (['http_status' => [100, 599], 'curl_code' => [0, 999], 'elapsed_ms' => [0, 480000],
+            'attempts' => [0, 3], 'received_bytes' => [0, 16842752]] as $key => [$min, $max]) {
+            $number = $value[$key] ?? null;
+            if (is_int($number) && $number >= $min && $number <= $max) $safe[$key] = $number;
+        }
+        if (is_array($value['timings_ms'] ?? null)) {
+            foreach (['dns', 'connect', 'tls', 'first_byte', 'total'] as $key) {
+                $number = $value['timings_ms'][$key] ?? null;
+                if (is_int($number) && $number >= 1 && $number <= 480000) $safe['timings_ms'][$key] = $number;
+            }
+        }
+        if (is_array($value['response_structure'] ?? null)) {
+            foreach (['business_code', 'data_type', 'data_count', 'first_children_type', 'first_children_count', 'first_item_type'] as $key) {
+                $observation = $value['response_structure'][$key] ?? null;
+                if (str_ends_with($key, '_type')) {
+                    if (in_array($observation, ['missing', 'null', 'boolean', 'number', 'string', 'list', 'object',
+                        'empty_array_or_object'], true)) $safe['response_structure'][$key] = $observation;
+                } elseif (is_int($observation) && $observation >= ($key === 'business_code' ? -999999 : 0)
+                    && $observation <= ($key === 'business_code' ? 999999 : 10000)) {
+                    $safe['response_structure'][$key] = $observation;
+                }
+            }
+        }
+        if (($safe['attempts'] ?? null) === 0) {
+            unset($safe['http_status'], $safe['curl_code'], $safe['received_bytes'], $safe['timings_ms']);
+        }
+        if ($attemptHistory && is_array($value['attempt_history'] ?? null) && array_is_list($value['attempt_history'])) {
+            foreach (array_slice($value['attempt_history'], 0, 3) as $attempt) {
+                $clean = self::diagnostic($attempt);
+                if ($clean !== null) $safe['attempt_history'][] = $clean;
+            }
+        }
+        return $safe === [] ? null : $safe;
+    }
+
+    private static function requests(mixed $value): array
+    {
+        $safe = [];
+        if (!is_array($value)) return $safe;
+        foreach (['catalog', 'detail', 'image'] as $stage) {
+            $request = $value[$stage] ?? null;
+            if (!is_array($request)) continue;
+            $clean = [];
+            $count = $request['count'] ?? null;
+            if (is_int($count) && $count >= 0 && $count <= 10000) $clean['count'] = $count;
+            foreach (['last', 'last_failure'] as $key) {
+                if (!is_array($request[$key] ?? null) || ($request[$key]['stage'] ?? null) !== $stage) continue;
+                $diagnostic = self::diagnostic($request[$key], true);
+                if ($diagnostic !== null) $clean[$key] = $diagnostic;
+            }
+            if ($clean !== []) $safe[$stage] = $clean;
+        }
         return $safe;
+    }
+
+    private static function errors(array $entry): array
+    {
+        $total = $entry['error_total'] ?? null;
+        $total = is_int($total) && $total >= 0 && $total <= 20000 ? $total : null;
+        $truncated = is_bool($entry['errors_truncated'] ?? null) ? $entry['errors_truncated'] : null;
+        $errors = [];
+        $rows = $entry['errors'] ?? null;
+        if (is_array($rows) && array_is_list($rows)) {
+            foreach (array_slice($rows, 0, 20) as $row) {
+                if (!is_array($row)) continue;
+                $safe = [];
+                if (is_string($row['code_hash'] ?? null) && preg_match('/^[a-f0-9]{12}$/D', $row['code_hash']) === 1) {
+                    $safe['code_hash'] = $row['code_hash'];
+                }
+                if (in_array($row['message'] ?? null, self::ERROR_MESSAGES, true)) $safe['message'] = $row['message'];
+                $diagnostic = self::diagnostic($row['diagnostics'] ?? null);
+                if ($diagnostic !== null) $safe['diagnostics'] = $diagnostic;
+                if ($safe !== []) $errors[] = $safe;
+            }
+            if (count($rows) > count($errors)) $truncated = true;
+        }
+        if ($total !== null && $total < count($errors)) $total = null;
+        if ($total !== null && $total > count($errors)) $truncated = true;
+        return ['errors' => $errors, 'error_total' => $total, 'errors_truncated' => $truncated];
     }
 
     private function readFile(string $path, int $limit): ?string

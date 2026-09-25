@@ -8,6 +8,13 @@ use RuntimeException;
 final class ExtensionLogger
 {
     private const MAX_BYTES = 2097152;
+    private const ERROR_MESSAGES = [
+        '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理',
+        '图片未刷新：已保留原图，其他字段仍按有效开关和安全门处理',
+        '单货源预算已耗尽', '本轮预算已耗尽', '远端返回业务失败', '远端凭据验证失败',
+        '远端商品不可用', '远端商品详情无效', '远端 HTTPS 请求失败', '同步失败，原因未分类',
+        '货源同步失败，未执行商品写入',
+    ];
 
     public function write(array $result): void
     {
@@ -52,6 +59,28 @@ final class ExtensionLogger
             0700
         );
         return $directory . '/sync.log';
+    }
+
+    /** Bounded records only; messages are local literals, never remote text. */
+    public static function sanitizeErrors(mixed $value): array
+    {
+        if (!is_array($value) || !array_is_list($value)) return [];
+        $safe = [];
+        foreach (array_slice($value, 0, 20) as $record) {
+            if (!is_array($record)) continue;
+            $entry = [];
+            $hash = $record['code_hash'] ?? null;
+            if (is_string($hash) && preg_match('/^[a-f0-9]{12}$/D', $hash) === 1) $entry['code_hash'] = $hash;
+            if (in_array($record['message'] ?? null, self::ERROR_MESSAGES, true)) $entry['message'] = $record['message'];
+            if (is_array($record['diagnostics'] ?? null)) {
+                $diagnostics = array_intersect_key(UpstreamFailure::sanitizeObservation($record['diagnostics']),
+                    array_flip(['category', 'stage', 'response_structure', 'remote_reason', 'http_status',
+                        'curl_code', 'attempts', 'elapsed_ms', 'timings_ms', 'received_bytes']));
+                if ($diagnostics !== []) $entry['diagnostics'] = $diagnostics;
+            }
+            if ($entry !== []) $safe[] = $entry;
+        }
+        return $safe;
     }
 
     /** Project at the write boundary; no raw text, arbitrary keys or nested payloads. */
@@ -102,6 +131,15 @@ final class ExtensionLogger
         if ($remaining !== []) $safe['remaining_budget'] = $remaining;
         $requests = UpstreamFailure::sanitizeRequests($result['request_diagnostics'] ?? null);
         if ($requests !== []) $safe['request_diagnostics'] = $requests;
+        $total = $result['error_total'] ?? null;
+        if (is_int($total) && $total >= 0 && $total <= 20000) {
+            $errors = self::sanitizeErrors($result['errors'] ?? null);
+            if ($total >= count($errors)) {
+                $safe['errors'] = $errors;
+                $safe['error_total'] = $total;
+                $safe['errors_truncated'] = $total > count($errors);
+            }
+        }
         return $safe;
     }
 }

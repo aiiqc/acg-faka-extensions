@@ -407,7 +407,7 @@ namespace {
         throw new RuntimeException('ordinary import unexpectedly classified its original exception');
     } catch (RuntimeException $exception) {
         mapperExpect(
-            $exception->getMessage() === '远端 HTTPS 请求失败',
+            $exception->getMessage() === '远端请求失败',
             'ordinary import did not preserve its original exception behavior',
         );
     }

@@ -81,6 +81,7 @@ namespace {
     use Pika\LocalExtensions\PikaSupplySync\Service\SourcePolicy;
     use Pika\LocalExtensions\PikaSupplySync\Service\StateStore;
     use Pika\LocalExtensions\PikaSupplySync\Service\SyncService;
+    use Pika\LocalExtensions\PikaSupplySync\Service\UpstreamFailure;
 
     function resumeExpect(bool $condition, string $message): void
     {
@@ -586,14 +587,15 @@ namespace {
     ];
     $makeSelectionService = static function (array $catalog, array $details, array &$requests,
         ?callable $imageResponse = null, ?callable $beforeDetailReply = null,
-        ?callable $catalogReply = null, int $sourceType = 0, ?callable $clock = null): SyncService {
+        ?callable $catalogReply = null, int $sourceType = 0, ?callable $clock = null,
+        ?callable $detailReply = null): SyncService {
         $requests = ['catalog' => 0, 'detail' => 0, 'other' => 0];
         if ($imageResponse !== null) $requests['image'] = 0;
         $budget = new RunBudget($clock ?? static fn(): float => 0.0);
         $policy = new SourcePolicy(static fn(string $host): array => ['93.184.216.34']);
         $transport = static function (array $endpoint, string $address, string $method,
             array $headers, string $body, int $maxBytes, int $connectTimeoutMs, int $requestTimeoutMs
-        ) use ($catalog, $details, &$requests, $imageResponse, $beforeDetailReply, $catalogReply, $sourceType): array {
+        ) use ($catalog, $details, &$requests, $imageResponse, $beforeDetailReply, $catalogReply, $sourceType, $detailReply): array {
             $path = parse_url($endpoint['url'], PHP_URL_PATH);
             $prefix = $sourceType === 2 ? '/plugin/SharedStock/api' : '/shared/commodity';
             if ($sourceType === 2) {
@@ -615,6 +617,10 @@ namespace {
                 $data = $details[$form['code']];
                 if ($sourceType === 2) $data = [['name' => 'Selection fixture category', 'children' => [$data]]];
                 if ($beforeDetailReply !== null) $beforeDetailReply();
+                if ($detailReply !== null) {
+                    $reply = $detailReply($form);
+                    if ($reply !== null) return $reply + ['connected_ip' => $address];
+                }
             } elseif ($path === '/fixture-cover.png' && $imageResponse !== null) {
                 $requests['image']++;
                 resumeExpect($method === 'GET' && $body === '', 'cover fixture must use a body-free GET');
@@ -664,6 +670,132 @@ namespace {
     $redImage = $pngPixel("\xff\0\0");
     $blueImage = $pngPixel("\0\0\xff");
 
+    // Exercise distinct peer declarations through real detail validation and item catches.
+    // The text is synthetic input; only bounded codes/enums may leave the diagnostic boundary.
+    $diagnosticCodes = ['A' => [403, '密钥错误', 'signature_rejected'], 'B' => [404, '商品不存在', 'not_found']];
+    $seedSelectionSource(6093, ['A' => [], 'B' => []]);
+    $requests = [];
+    $before = $sourceRows(6093);
+    $businessRun = $observeRun($makeSelectionService($selectionCatalog(['A' => 7, 'B' => 7]),
+        ['A' => $selectionDetail('A'), 'B' => $selectionDetail('B')], $requests,
+        detailReply: static function (array $form) use ($diagnosticCodes): array {
+            [$code, $message] = $diagnosticCodes[$form['code']];
+            return ['status' => 200, 'content_type' => 'application/json',
+                'body' => json_encode(['code' => $code, 'msg' => $message, 'data' => null], JSON_THROW_ON_ERROR)];
+        }), $selectedOptions(6093, ['name']));
+    $businessLog = $lastSelectionLog();
+    resumeExpect($businessRun['result']['failed'] === 2 && $businessRun['result']['error_total'] === 2
+        && $businessRun['result']['errors_truncated'] === false && $businessRun['writes'] === 0
+        && $requests === ['catalog' => 1, 'detail' => 2, 'other' => 0] && $sourceRows(6093) === $before
+        && (new StateStore())->read(6093)['cursor'] === 'B'
+        && $businessLog['errors'] === $businessRun['result']['errors'],
+        'business observations changed calls, writes, cursor advancement or per-item log retention');
+    foreach (array_values($diagnosticCodes) as $index => [$code, $message, $reason]) {
+        $record = $businessLog['errors'][$index];
+        resumeExpect($record['code_hash'] === substr(hash('sha256', $index === 0 ? 'A' : 'B'), 0, 12)
+            && $record['message'] === '远端返回业务失败'
+            && $record['diagnostics']['category'] === 'business' && $record['diagnostics']['stage'] === 'detail'
+            && $record['diagnostics']['http_status'] === 200 && $record['diagnostics']['attempts'] === 1
+            && $record['diagnostics']['response_structure']['business_code'] === $code
+            && $record['diagnostics']['remote_reason'] === $reason
+            && !isset($record['diagnostics']['attempt_history'], $record['diagnostics']['remaining_budget']),
+            'distinct detail business code/reason was flattened into the last HTTPS failure');
+    }
+    resumeExpect($businessLog['failure_diagnostic']['response_structure']['business_code'] === 404
+        && $businessLog['failure_diagnostic']['remote_reason'] === 'not_found',
+        'source failure summary discarded the legitimate last detail structure/reason');
+    $diagnosticStateResult = (new StateStore())->read(6093)['last_result'];
+    resumeExpect(array_keys($diagnosticStateResult) === [
+        'status', 'catalog_total', 'catalog_unknown', 'planned', 'applied', 'failed', 'mass_zero_fuse',
+    ] && $diagnosticStateResult['catalog_unknown'] === 0
+        && $diagnosticStateResult['planned']['held_unknown'] === 0 && $diagnosticStateResult['applied']['held_unknown'] === 0,
+        'new diagnostics entered the persisted last_result schema or removed legacy unknown counters');
+
+    // All 25 unknown failures count, while only the first 20 safe records persist.
+    $manyRows = $manyStocks = $manyDetails = [];
+    foreach (range(1, 25) as $number) {
+        $code = sprintf('E%02d', $number);
+        $manyRows[$code] = [];
+        $manyStocks[$code] = 7;
+        $manyDetails[$code] = $selectionDetail($code);
+    }
+    $seedSelectionSource(6094, $manyRows);
+    $requests = [];
+    $before = $sourceRows(6094);
+    $manyRun = $observeRun($makeSelectionService($selectionCatalog($manyStocks), $manyDetails, $requests,
+        detailReply: static function (): never {
+            throw new \RuntimeException('fixture-secret unknown text https://example.com/private?token=fixture-secret');
+        }), $selectedOptions(6094, ['name'], saved: ['batch_limit' => 25]));
+    $manyLog = $lastSelectionLog();
+    resumeExpect($manyRun['result']['status'] === 'partial' && $manyRun['result']['failed'] === 25
+        && $manyRun['result']['error_total'] === 25 && $manyRun['result']['errors_truncated'] === true
+        && count($manyRun['result']['errors']) === 20 && $manyRun['writes'] === 0
+        && $requests === ['catalog' => 1, 'detail' => 25, 'other' => 0] && $sourceRows(6094) === $before
+        && (new StateStore())->read(6094)['cursor'] === 'E25'
+        && $manyLog['error_total'] === 25 && $manyLog['errors_truncated'] === true
+        && $manyLog['errors'] === $manyRun['result']['errors']
+        && $manyLog['errors'][19]['code_hash'] === substr(hash('sha256', 'E20'), 0, 12),
+        'error truncation lost total events or changed non-budget continuation/cursor behavior');
+    foreach ($manyLog['errors'] as $record) resumeExpect($record['message'] === '同步失败，原因未分类'
+        && $record['diagnostics']['category'] === 'unknown', 'unknown failure retained exception text or wrong class');
+    resumeExpect(!str_contains(json_encode($manyRun['result'], JSON_THROW_ON_ERROR), 'fixture-secret'),
+        'unclassified error leaked raw exception data in the returned result');
+
+    // Maximum legal records coexist with all three full request-history slots under the existing cap.
+    $maximumDiagnostic = ['category' => 'business', 'stage' => 'detail', 'http_status' => 599,
+        'curl_code' => 999, 'elapsed_ms' => 480000, 'attempts' => 3, 'remote_reason' => 'upstream_unavailable',
+        'timings_ms' => array_fill_keys(['dns', 'connect', 'tls', 'first_byte', 'total'], 480000),
+        'received_bytes' => 16842752, 'mime_category' => 'application_json', 'mime_count' => 65535,
+        'json_valid' => false, 'mime_compatibility' => true, 'json_error_code' => 255, 'json_error' => 'unknown',
+        'response_structure' => ['business_code' => -999999, 'data_type' => 'empty_array_or_object', 'data_count' => 10000,
+            'first_children_type' => 'empty_array_or_object', 'first_children_count' => 10000,
+            'first_item_type' => 'empty_array_or_object'],
+        'remaining_budget' => ['round_ms' => 300000, 'source_ms' => 120000]];
+    $maximumDiagnostic['attempt_history'] = array_fill(0, 3, [
+        'category' => 'http_retryable', 'http_status' => 599, 'curl_code' => 999, 'elapsed_ms' => 480000,
+        'connect_timeout_ms' => 5000, 'request_timeout_ms' => 90000,
+        'timings_ms' => $maximumDiagnostic['timings_ms'], 'received_bytes' => 16842752,
+        'remaining_before' => $maximumDiagnostic['remaining_budget'],
+    ]);
+    $maximumResult = ['source_id' => 6095, 'status' => 'partial', 'mode' => 'basic', 'phase' => 'actions',
+        'dry_run' => false, 'failed' => 10000, 'cover_failed' => 10000, 'selection_held' => 10000,
+        'catalog_total' => 10000, 'catalog_unknown' => 10000, 'local_total' => 10000,
+        'catalog_diagnostic' => $maximumDiagnostic, 'failure_diagnostic' => $maximumDiagnostic,
+        'remaining_budget' => $maximumDiagnostic['remaining_budget'],
+        'target_code_hashes' => array_fill(0, 100, 'ffffffffffff'),
+        'verified_code_hashes' => array_fill(0, 100, 'ffffffffffff'),
+        'next_cursor_hash' => 'ffffffffffff', 'mass_zero_fuse' => false, 'mass_zero_ratio' => 100,
+        'planned' => array_fill_keys(['sync', 'import', 'zero', 'hold_zero', 'held_unknown'], 10000),
+        'applied' => array_fill_keys(['sync', 'import', 'zero', 'held_race', 'already_managed', 'held_existing_unmanaged', 'held_unknown'], 10000),
+        'errors' => array_fill(0, 20, ['code_hash' => 'ffffffffffff',
+            'message' => '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理',
+            'diagnostics' => $maximumDiagnostic]), 'error_total' => 20000, 'errors_truncated' => true];
+    foreach (['catalog', 'detail', 'image'] as $stage) {
+        $request = array_replace($maximumDiagnostic, ['stage' => $stage]);
+        $maximumResult['request_diagnostics'][$stage] = ['count' => 10000, 'last' => $request, 'last_failure' => $request];
+    }
+    (new ExtensionLogger())->write($maximumResult);
+    $maximumLog = $lastSelectionLog();
+    $maximumJson = json_encode($maximumLog, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    resumeExpect(strlen($maximumJson) < 32768 && json_decode($maximumJson, true, 16, JSON_THROW_ON_ERROR) === $maximumLog
+        && count($maximumLog['errors']) === 20 && $maximumLog['error_total'] === 20000
+        && $maximumLog['errors_truncated'] === true
+        && $maximumLog['request_diagnostics'] === UpstreamFailure::sanitizeRequests($maximumResult['request_diagnostics'])
+        && $maximumLog['errors'][19]['diagnostics']['timings_ms'] === $maximumDiagnostic['timings_ms']
+        && $maximumLog['errors'][19]['diagnostics']['received_bytes'] === 16842752
+        && $maximumLog['errors'][19]['diagnostics']['response_structure'] === $maximumDiagnostic['response_structure']
+        && !isset($maximumLog['errors'][19]['diagnostics']['attempt_history'], $maximumLog['errors'][19]['diagnostics']['remaining_budget']),
+        'maximum legal diagnostics exceeded line/depth caps, dropped records or lost full stage history');
+    $maliciousRecords = [['code_hash' => 'not-a-hash', 'message' => 'fixture-secret', 'raw' => 'fixture-secret',
+        'name' => 'fixture-secret', 'diagnostics' => ['category' => 'business', 'stage' => 'detail',
+            'remote_reason' => 'fixture-secret', 'response_structure' => ['business_code' => 404, 'raw' => 'fixture-secret'],
+            'url' => 'fixture-secret', 'timings_ms' => ['dns' => -1, 'raw' => 'fixture-secret'],
+            'received_bytes' => 16842753]]];
+    $safeRecords = ExtensionLogger::sanitizeErrors($maliciousRecords);
+    resumeExpect($safeRecords === [['diagnostics' => ['category' => 'business', 'response_structure' => ['business_code' => 404], 'stage' => 'detail']]]
+        && ExtensionLogger::sanitizeErrors(['named' => $maliciousRecords[0]]) === [],
+        'error boundary retained raw message/keys, arbitrary reasons, invalid measurements or a named record map');
+
     // A catalog budget failure must reach the actual log before error() writes it.
     $diagnosticSource = 6099;
     $seedSelectionSource($diagnosticSource, ['A' => []]);
@@ -692,6 +824,10 @@ namespace {
         && $diagnosticLog['failure_diagnostic']['category'] === 'budget'
         && $diagnosticLog['remaining_budget'] === ['round_ms' => 179000, 'source_ms' => 0],
         'catalog budget diagnostic return and persisted log diverged');
+    resumeExpect($diagnosticLog['error_total'] === 1 && $diagnosticLog['errors_truncated'] === false
+        && count($diagnosticLog['errors']) === 1 && !isset($diagnosticLog['errors'][0]['code_hash'])
+        && $diagnosticLog['errors'][0]['message'] === '单货源预算已耗尽',
+        'source budget event must have a safe source-level record without a fabricated product hash');
 
     foreach (['detail' => 6097, 'image' => 6098] as $failureStage => $sourceId) {
         $seedSelectionSource($sourceId, ['A' => []]);
@@ -725,6 +861,10 @@ namespace {
             && $log['request_diagnostics']['catalog']['last']['category'] === 'none'
             && $log['request_diagnostics'] === $observed['result']['request_diagnostics'],
             'partial result/log lost detail or image budget evidence');
+        resumeExpect($log['error_total'] === 1 && $log['errors_truncated'] === false
+            && $log['errors'][0]['diagnostics']['category'] === 'budget'
+            && $log['errors'][0]['diagnostics']['stage'] === $failureStage
+            && $log['failed'] === 0, 'budget event was lost or incorrectly counted as a failed product');
         $cut = false;
         $continued = $observeRun($service, $options);
         $log = $lastSelectionLog();
@@ -835,7 +975,10 @@ namespace {
         ksort($loggedApplied);
         ksort($resultApplied);
         resumeExpect($last['catalog_unknown'] === 19
+            && $last['planned']['held_unknown'] === $observed['result']['planned']['held_unknown']
             && $last['applied']['held_unknown'] === $observed['result']['applied']['held_unknown']
+            && array_intersect_key($last, array_flip(['errors', 'error_total', 'errors_truncated',
+                'failure_diagnostic', 'request_diagnostics'])) === []
             && $log['catalog_unknown'] === 19 && $loggedApplied === $resultApplied,
             'unknown counts diverged between actual result, saved state and safe log');
     }
@@ -1044,8 +1187,9 @@ namespace {
         $log = $lastSelectionLog();
         resumeExpect(($log['source_id'] ?? null) === $sourceId && ($log['selection_held'] ?? 0) === 1
             && $log['status'] === 'partial' && $log['failed'] === 1 && $log['applied']['sync'] === 1
-            && $log['dry_run'] === false && !array_key_exists('errors', $log) && !array_key_exists('message', $log),
-            'selection mismatch log lost the partial count or exposed error details');
+            && $log['dry_run'] === false && $log['error_total'] === 1 && $log['errors_truncated'] === false
+            && $log['errors'] === $result['errors'] && !array_key_exists('message', $log),
+            'selection mismatch log lost its safe error record or partial count');
     }
 
     $seedSelectionSource(106, ['A' => ['shared_amount_sync' => 0, 'shared_config_sync' => 1,
@@ -1254,6 +1398,11 @@ namespace {
         resumeExpect($result['status'] === 'partial' && $result['applied']['sync'] === 0
             && $result['failure_diagnostic'] === ['category' => 'http_rejected', 'stage' => 'image'],
             'reused fatal image exception imported another source request history or hid failure');
+        resumeExpect($result['error_total'] === $result['failed'] && $result['errors_truncated'] === false,
+            'cached image failures lost item events');
+        foreach ($result['errors'] as $record) resumeExpect($record['diagnostics'] === [
+            'category' => 'http_rejected', 'stage' => 'image',
+        ], 'cached image record inherited cross-source timing, attempts, HTTP or response data');
     }
     resumeExpect($sourcesWithImageRequest === 1 && $cachedFailureRun['writes'] === 0
         && array_merge($sourceRows(111), $sourceRows(112)) === $before && $imageFiles() === $beforeFiles
@@ -1298,7 +1447,9 @@ namespace {
             $expectedFailures = (int)$result['source_id'] === 111 ? 2 : 1;
             resumeExpect($result['status'] === 'partial' && $result['failed'] === $expectedFailures
                 && ($result['cover_failed'] ?? 0) === $expectedFailures && $result['applied']['sync'] === $expectedFailures
-                && $result['planned']['import'] === 0 && $result['applied']['import'] === 0,
+                && $result['planned']['import'] === 0 && $result['applied']['import'] === 0
+                && $result['error_total'] === $expectedFailures && count($result['errors']) === $expectedFailures
+                && $result['errors_truncated'] === false,
                 'failed cover refresh must count valid partial saves once and remain visible as partial/cover_failed');
             $coverFailures += $result['cover_failed'];
         }
@@ -1375,10 +1526,14 @@ namespace {
         'config' => Ini::toConfig($matched), 'api_status' => 1]);
     resumeExpect($observed['result']['status'] === 'partial' && $observed['result']['failed'] === 1
         && ($observed['result']['cover_failed'] ?? 0) === 1 && ($observed['result']['selection_held'] ?? 0) === 1
+        && $observed['result']['error_total'] === 2 && count($observed['result']['errors']) === 2
+        && $observed['result']['errors_truncated'] === false
         && $observed['result']['applied']['sync'] === 1 && $observed['writes'] === 1
         && $sourceRows(114) === [$expected] && $imageFiles() === $beforeImages
         && $requests === ['catalog' => 1, 'detail' => 1, 'other' => 0, 'image' => 1],
         'cover failure plus held specifications must preserve exact projection and count the failed item only once');
+    resumeExpect($lastSelectionLog()['error_total'] === 2 && $lastSelectionLog()['failed'] === 1,
+        'two field failures on one product must remain two events and one failed product in the log');
 
     $coverStatus = 200;
     $coverBytes = $redImage;
@@ -1945,7 +2100,8 @@ namespace {
     foreach ($targetLog as $line) {
         $record = json_decode(substr($line, strpos($line, ' ') + 1), true, 32, JSON_THROW_ON_ERROR);
         resumeExpect(($record['targeted'] ?? false) === true && $record['target_code_hashes'] === $targetHashes
-            && !isset($record['errors'], $record['message']), 'targeted log lost scope or exposed item details');
+            && $record['errors'] === [] && $record['error_total'] === 0 && $record['errors_truncated'] === false
+            && !isset($record['message']), 'targeted log lost scope or exposed item details');
     }
     foreach ([[], [$targetHashes[0], $targetHashes[0]], [...$targetHashes, $targetHash('A')],
         ['not-a-hash'], [7], ['key' => $targetHashes[0]]] as $invalidTargets) {
@@ -2489,6 +2645,7 @@ namespace {
         . '; targeted runs=' . $targetRuns
         . '; independent scope runs=' . $independentScopeRuns
         . '; legacy type-two ten-percent runs=' . $legacyTypeTwoRuns
+        . '; per-item business records=2; counted/truncated errors=25/20; maximum diagnostic JSON bytes=' . strlen($maximumJson)
         . "; currency=official; quote/cost=official; submit=prevalidation-only; network=injected; database=sqlite-memory; uid="
         . posix_geteuid() . "\n");
 }

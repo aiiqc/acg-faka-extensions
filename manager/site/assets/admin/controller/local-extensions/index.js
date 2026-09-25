@@ -162,6 +162,84 @@
         section.append(title, node('p', 'text-muted mt-2',
             '调度状态：未核实；当前是否正在运行：未核实。扩展开关不代表定时器状态；以下为历史记录，不是实时进度。'), warning, content);
         const count = value => Number.isInteger(value) && value >= 0 && value <= 50000 ? String(value) : '未记录';
+        const object = value => value && typeof value === 'object' && !Array.isArray(value);
+        const measured = (value, min, max) => Number.isInteger(value) && value >= min && value <= max ? String(value) : '未取得';
+        const stages = {catalog: '目录', detail: '详情', image: '图片'};
+        const categories = {none: '请求完成', transport: '网络传输失败', http_retryable: '上游暂不可用',
+            http_rejected: 'HTTP 请求被拒绝', credentials: '凭据校验失败', business: '业务返回失败',
+            content_type: '响应类型异常', json: 'JSON 无效', schema: '响应结构异常', response_size: '响应超过大小上限',
+            budget: '请求预算耗尽', item_unavailable: '商品不可用', item_invalid: '商品详情无效', unknown: '原因未分类'};
+        const remoteReasons = {unknown: '原因未分类', merchant_unknown: '商户不存在', signature_rejected: '签名被拒绝',
+            code_missing: '缺少商品编号', not_found: '商品不存在', not_shared: '商品未共享', off_shelf: '商品已下架',
+            waf_rejected: '请求被防护规则拒绝', upstream_unavailable: '上游服务不可用'};
+        const shapes = {missing: '缺字段', null: 'null', boolean: '布尔值', number: '数字', string: '字符串',
+            list: '列表', object: '对象', empty_array_or_object: '空数组或对象'};
+        const messages = new Set([
+            '规格或价格变更待确认：无法精确匹配的部分保留本地，其他已选字段按单品开关处理',
+            '图片未刷新：已保留原图，其他字段仍按有效开关和安全门处理',
+            '单货源预算已耗尽', '本轮预算已耗尽', '远端返回业务失败', '远端凭据验证失败',
+            '远端商品不可用', '远端商品详情无效', '远端 HTTPS 请求失败', '同步失败，原因未分类',
+            '货源同步失败，未执行商品写入',
+        ]);
+        const mapped = (labels, value, fallback = '未取得') => typeof value === 'string' && Object.hasOwn(labels, value) ? labels[value] : fallback;
+        const renderDiagnostic = (label, diagnostic, includeAttempts = false) => {
+            const block = node('div', 'local-sync-diagnostic mb-2');
+            if (!object(diagnostic)) return block;
+            const structure = object(diagnostic.response_structure) ? diagnostic.response_structure : {};
+            block.append(node('p', 'mb-0', `${label}：${mapped(stages, diagnostic.stage, '阶段未取得')}；${mapped(categories, diagnostic.category, '原因未分类')}`),
+                node('p', 'text-muted mb-0', `HTTP ${measured(diagnostic.http_status, 100, 599)}；业务码 ${measured(structure.business_code, -999999, 999999)}；cURL ${measured(diagnostic.curl_code, 0, 999)}；请求耗时 ${measured(diagnostic.elapsed_ms, 0, 480000)} ms；尝试 ${measured(diagnostic.attempts, 0, 3)} 次；接收 ${measured(diagnostic.received_bytes, 0, 16842752)} 字节。`));
+            if (Object.hasOwn(diagnostic, 'remote_reason')) {
+                block.append(node('p', 'text-warning mb-0', `上游返回的声明，未核实根因：${mapped(remoteReasons, diagnostic.remote_reason, '原因未分类')}。`));
+            }
+            if (object(diagnostic.response_structure)) {
+                block.append(node('p', 'text-muted mb-0', `数据形状 ${mapped(shapes, structure.data_type)}；数据数量 ${measured(structure.data_count, 0, 10000)}；首个 children ${mapped(shapes, structure.first_children_type)}／${measured(structure.first_children_count, 0, 10000)}；首项 ${mapped(shapes, structure.first_item_type)}。`));
+            }
+            if (object(diagnostic.timings_ms)) {
+                const timing = diagnostic.timings_ms;
+                block.append(node('p', 'text-muted mb-0', `累计毫秒：DNS ${measured(timing.dns, 1, 480000)}；连接 ${measured(timing.connect, 1, 480000)}；TLS ${measured(timing.tls, 1, 480000)}；首字节 ${measured(timing.first_byte, 1, 480000)}；总计 ${measured(timing.total, 1, 480000)}。`));
+            }
+            if (includeAttempts && Array.isArray(diagnostic.attempt_history)) {
+                diagnostic.attempt_history.slice(0, 3).forEach((attempt, index) => {
+                    if (object(attempt)) block.append(renderDiagnostic(`第 ${index + 1} 次尝试`, attempt));
+                });
+            }
+            return block;
+        };
+        const diagnostics = entry => {
+            const rows = Array.isArray(entry.errors) ? entry.errors.slice(0, 20).filter(object) : [];
+            const requests = object(entry.request_diagnostics) ? entry.request_diagnostics : {};
+            const hasRequests = Object.keys(stages).some(stage => object(requests[stage]));
+            const block = node('details', 'local-sync-diagnostics mt-2');
+            block.append(node('summary', '', `诊断事件总数 ${measured(entry.error_total, 0, 20000)}；展示 ${rows.length} 条（与失败商品数不同）`));
+            if (typeof entry.phase === 'string') {
+                block.append(node('p', 'text-muted mb-1', `本轮最后记录位置：${mapped({preflight: '前置检查', catalog: '目录读取', planning: '批次规划', actions: '商品处理'}, entry.phase)}。`));
+            }
+            if (entry.errors_truncated === true || (Number.isInteger(entry.error_total) && entry.error_total > rows.length)) {
+                block.append(node('p', 'text-warning mb-1', '记录已截断或有不可读条目，最多展示 20 条；未展示的条目不能推断原因。'));
+            }
+            if (rows.length === 0 && (!Number.isInteger(entry.error_total) || entry.error_total > 0)) {
+                block.append(node('p', 'text-muted mb-1', '未取得逐项诊断，不能从失败数推断原因。'));
+            }
+            if (rows.length > 0 || hasRequests || object(entry.failure_diagnostic)) {
+                block.append(node('p', 'text-muted mb-1', 'HTTP 200 不代表业务成功。计时各值从该次 curl 开始累计，不是独立阶段耗时；DNS 仅为 libcurl 固定解析阶段，不含连接策略在 curl 外部执行的 DNS 查询。缺失表示未取得。'),
+                    node('p', 'text-muted mb-1', '最近记录不是平均值、p95 或完整请求历史，也不是商品覆盖率或实时端到端进度。'));
+            }
+            rows.forEach((row, index) => {
+                const identity = typeof row.code_hash === 'string' && /^[a-f0-9]{12}$/.test(row.code_hash)
+                    ? `商品哈希 ${row.code_hash}` : '货源级记录／商品哈希未取得';
+                block.append(node('p', 'mb-1', `${index + 1}. ${identity}：${messages.has(row.message) ? row.message : '具体原因未记录'}`));
+                if (object(row.diagnostics)) block.append(renderDiagnostic('本项观测', row.diagnostics));
+            });
+            if (object(entry.failure_diagnostic)) block.append(renderDiagnostic('本轮最后失败观测', entry.failure_diagnostic));
+            Object.keys(stages).forEach(stage => {
+                const request = requests[stage];
+                if (!object(request)) return;
+                block.append(node('p', 'mb-1', `${stages[stage]}请求次数 ${measured(request.count, 0, 10000)}`));
+                if (object(request.last)) block.append(renderDiagnostic('最近一次请求', request.last, true));
+                if (object(request.last_failure)) block.append(renderDiagnostic('最近一次失败请求', request.last_failure, true));
+            });
+            return block;
+        };
         const record = (label, entry) => {
             const block = node('div', 'local-sync-record');
             if (!entry || typeof entry !== 'object') {
@@ -199,13 +277,18 @@
                     budget: '目录请求预算已用尽'};
                 const reason = Object.hasOwn(reasons, diagnostic.category) ? reasons[diagnostic.category] : '目录错误类别未记录';
                 const observation = (key, min, max) => Number.isInteger(diagnostic[key])
-                    && diagnostic[key] >= min && diagnostic[key] <= max ? String(diagnostic[key]) : '未记录';
+                    && diagnostic[key] >= min && diagnostic[key] <= max ? String(diagnostic[key]) : '未取得';
                 block.append(node('p', 'text-warning mb-0', `目录请求诊断：${reason}。本货源本轮未执行商品写入。`),
                     node('p', 'text-muted mb-0', `HTTP ${observation('http_status', 100, 599)}；cURL ${observation('curl_code', 0, 999)}；耗时 ${observation('elapsed_ms', 0, 480000)} ms；尝试 ${observation('attempts', 1, 3)} 次。HTTP 状态不代表同步成功。`));
             }
             if (Number.isInteger(entry.selection_held) && entry.selection_held > 0) block.append(node('p', 'text-warning mb-0', `规格或价格变更待确认 ${entry.selection_held} 项：无法精确匹配的部分保留本地，计入部分处理；没有建立自动补查任务。`));
             if (entry.mass_zero_fuse === true) block.append(node('p', 'text-warning mb-0', '批量清零熔断已触发，部分清零动作被拦截。'));
             if (Number.isInteger(applied.held_race) && applied.held_race > 0) block.append(node('p', 'text-warning mb-0', `目录与详情库存不一致，暂缓 ${applied.held_race} 项。`));
+            if (entry.failed > 0 || entry.status === 'error' || entry.error_total > 0 || entry.errors_truncated === true
+                || (Array.isArray(entry.errors) && entry.errors.length > 0) || object(entry.failure_diagnostic)
+                || (object(entry.request_diagnostics) && Object.keys(stages).some(stage => object(entry.request_diagnostics[stage])))) {
+                block.append(diagnostics(entry));
+            }
             return block;
         };
         const fill = status => {

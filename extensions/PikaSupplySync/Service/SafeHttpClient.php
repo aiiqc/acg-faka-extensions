@@ -328,6 +328,7 @@ final class SafeHttpClient
             $addresses = $endpoint['addresses'];
             $maxAttempts = $diagnostic ? 1 : self::MAX_ATTEMPTS;
             for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
+                unset($this->diagnostics['timings_ms'], $this->diagnostics['received_bytes']);
                 [$connectTimeoutMs, $requestTimeoutMs] = $this->attemptTimeouts();
                 if ($diagnostic || $observeDetail) {
                     $this->resetDiagnosticObservation();
@@ -443,7 +444,7 @@ final class SafeHttpClient
                 'elapsed_ms' => (int)((hrtime(true) - $started) / 1000000),
                 'connect_timeout_ms' => $connectTimeoutMs, 'request_timeout_ms' => $requestTimeoutMs,
                 'remaining_before' => $remainingBefore,
-            ];
+            ] + array_intersect_key($this->diagnostics, array_flip(['timings_ms', 'received_bytes']));
         } catch (\Throwable) {
             // Observation must never replace the request's original outcome.
         }
@@ -490,6 +491,7 @@ final class SafeHttpClient
             throw new RuntimeException('无法初始化 HTTPS 客户端');
         }
         $received = '';
+        $attemptEntered = false;
         $tooLarge = false;
         $retryAfterMs = 0;
         $resolveAddress = str_contains($address, ':') ? '[' . $address . ']' : $address;
@@ -546,6 +548,7 @@ final class SafeHttpClient
                 throw new RuntimeException('无法配置 HTTPS 客户端');
             }
             $this->diagnostics['attempts']++;
+            $attemptEntered = true;
             $completed = curl_exec($handle);
             $this->diagnostics['http_status'] = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             $this->diagnostics['curl_code'] = curl_errno($handle);
@@ -567,8 +570,43 @@ final class SafeHttpClient
                 'retry_after_ms' => $retryAfterMs,
             ];
         } finally {
+            try {
+                if ($attemptEntered) {
+                    // Read only fixed numeric fields. Never retain getinfo's URL/IP/header array.
+                    $info = [];
+                    foreach (['dns' => CURLINFO_NAMELOOKUP_TIME, 'connect' => CURLINFO_CONNECT_TIME,
+                        'tls' => CURLINFO_APPCONNECT_TIME, 'first_byte' => CURLINFO_STARTTRANSFER_TIME,
+                        'total' => CURLINFO_TOTAL_TIME] as $phase => $field) {
+                        $info[$phase] = curl_getinfo($handle, $field);
+                    }
+                    // libcurl's downloaded body bytes, not accepted callback bytes or Content-Length.
+                    $info['received_bytes'] = curl_getinfo($handle, CURLINFO_SIZE_DOWNLOAD_T);
+                    $this->diagnostics = array_replace($this->diagnostics, $this->curlMeasurements($info));
+                }
+            } catch (\Throwable) {
+                // Diagnostic extraction must not mask the original request outcome.
+            }
             curl_close($handle);
         }
+    }
+
+    /** Convert native seconds without inventing timings for unreached zero-valued stages. */
+    private function curlMeasurements(array $info): array
+    {
+        $safe = [];
+        foreach (['dns', 'connect', 'tls', 'first_byte', 'total'] as $phase) {
+            $seconds = $info[$phase] ?? null;
+            if ((is_int($seconds) || is_float($seconds)) && is_finite((float)$seconds)
+                && $seconds > 0 && $seconds <= 480) {
+                $safe['timings_ms'][$phase] = (int)ceil($seconds * 1000);
+            }
+        }
+        $bytes = $info['received_bytes'] ?? null;
+        if ((is_int($bytes) || is_float($bytes)) && is_finite((float)$bytes)
+            && $bytes >= 0 && $bytes <= 16842752 && floor($bytes) === (float)$bytes) {
+            $safe['received_bytes'] = (int)$bytes;
+        }
+        return $safe;
     }
 
     private function backoff(int $attempt, int $retryAfterMs): void

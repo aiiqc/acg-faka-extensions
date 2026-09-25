@@ -288,13 +288,34 @@ final class SharedGateway
         }
         if ((int)$response['code'] !== 200) {
             // The peer has seen the credentials and may echo them in `msg`.
-            // Never surface untrusted remote error text into CLI output or logs.
-            throw new UpstreamFailure('business', $this->responseDiagnostics());
+            // After the secret gate, expose only an exact, peer-declared enum.
+            $diagnostics = $this->responseDiagnostics();
+            $diagnostics['remote_reason'] = $this->remoteReason($response['msg'] ?? null);
+            throw new UpstreamFailure('business', $diagnostics);
         }
         if (!is_array($response['data'] ?? null)) {
             throw new UpstreamFailure('schema', $this->responseDiagnostics());
         }
         return $response['data'];
+    }
+
+    /** These are unverified peer declarations, never local facts or remote text. */
+    private function remoteReason(mixed $message): string
+    {
+        if (!is_string($message)) {
+            return 'unknown';
+        }
+        return match ($message) {
+            '商户ID不存在' => 'merchant_unknown',
+            '密钥错误' => 'signature_rejected',
+            '对接CODE不能为空' => 'code_missing',
+            '商品不存在' => 'not_found',
+            '该商品未开放对接' => 'not_shared',
+            '该商品暂未上架' => 'off_shelf',
+            'The current session is not secure. Please refresh the web page and try again.' => 'waf_rejected',
+            '商品暂时无法购买，请稍后重试' => 'upstream_unavailable',
+            default => 'unknown',
+        };
     }
 
     private function responseDiagnostics(): array

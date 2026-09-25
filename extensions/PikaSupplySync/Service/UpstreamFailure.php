@@ -14,13 +14,31 @@ final class UpstreamFailure extends RuntimeException
         'content_type', 'json', 'schema', 'response_size', 'budget', 'unknown',
         'item_unavailable', 'item_invalid',
     ];
+    private const REMOTE_REASONS = [
+        'unknown', 'merchant_unknown', 'signature_rejected', 'code_missing', 'not_found',
+        'not_shared', 'off_shelf', 'waf_rejected', 'upstream_unavailable',
+    ];
 
     public readonly array $diagnostics;
 
     public function __construct(string $category, array $diagnostics = [])
     {
         $this->diagnostics = self::sanitize(['category' => $category] + $diagnostics);
-        parent::__construct('远端 HTTPS 请求失败');
+        parent::__construct(match ($this->diagnostics['category']) {
+            'transport' => '远端 HTTPS 传输失败',
+            'http_retryable' => '远端 HTTP 服务暂时不可用',
+            'http_rejected' => '远端 HTTP 请求被拒绝',
+            'credentials' => '货源凭据无效',
+            'business' => '远端业务请求被拒绝',
+            'content_type' => '远端响应类型不正确',
+            'json' => '远端响应 JSON 解析失败',
+            'schema' => '远端响应结构不正确',
+            'response_size' => '远端响应超过安全大小限制',
+            'budget' => '请求剩余预算不足',
+            'item_unavailable' => '远端商品不可用',
+            'item_invalid' => '远端商品数据不正确',
+            default => '远端请求失败',
+        });
     }
 
     /** Decode errors only; bounded future codes remain observations, not syntax claims. */
@@ -76,6 +94,10 @@ final class UpstreamFailure extends RuntimeException
             $safe[$key] = is_int($value) && $value >= 0 && $value <= $max ? $value : 0;
         }
         $safe['http_status'] = $safe['http_status'] >= 100 ? $safe['http_status'] : 0;
+        $safe += self::transferMeasurements($values);
+        if (in_array($values['remote_reason'] ?? null, self::REMOTE_REASONS, true)) {
+            $safe['remote_reason'] = $values['remote_reason'];
+        }
         if (array_key_exists('mime_category', $values)) {
             $safe['mime_category'] = in_array($values['mime_category'], [
                 'application_json', 'text_json', 'json_suffix', 'text_html', 'text_plain',
@@ -116,6 +138,7 @@ final class UpstreamFailure extends RuntimeException
                 if (!is_array($attempt)) continue;
                 $entry = self::measurements($attempt, ['http_status' => 599, 'curl_code' => 999,
                     'elapsed_ms' => 480000, 'connect_timeout_ms' => 5000, 'request_timeout_ms' => 90000]);
+                $entry += self::transferMeasurements($attempt);
                 if (isset($entry['http_status']) && $entry['http_status'] > 0 && $entry['http_status'] < 100) {
                     unset($entry['http_status']);
                 }
@@ -177,5 +200,18 @@ final class UpstreamFailure extends RuntimeException
             if (is_int($value) && $value >= 0 && $value <= $max) $safe[$key] = $value;
         }
         return $safe;
+    }
+
+    /** Cumulative curl milestones; absent/zero stages are not completion evidence. */
+    private static function transferMeasurements(array $values): array
+    {
+        $safe = [];
+        if (is_array($values['timings_ms'] ?? null)) {
+            $timings = self::measurements($values['timings_ms'],
+                array_fill_keys(['dns', 'connect', 'tls', 'first_byte', 'total'], 480000));
+            $timings = array_filter($timings, static fn(int $value): bool => $value > 0);
+            if ($timings !== []) $safe['timings_ms'] = $timings;
+        }
+        return $safe + self::measurements($values, ['received_bytes' => 16842752]);
     }
 }

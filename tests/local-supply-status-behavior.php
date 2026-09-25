@@ -105,7 +105,7 @@ namespace {
         'category' => 'secret-sentinel', 'http_status' => 600, 'curl_code' => '23', 'elapsed_ms' => 480001, 'attempts' => -1,
     ]]), '2026-09-22T05:00:00+00:00'));
     expect(SupplySyncStatus::snapshot()['sources'][0]['actual']['catalog_diagnostic'] === [
-        'category' => 'unknown', 'http_status' => 0, 'curl_code' => 0, 'elapsed_ms' => 0, 'attempts' => 0,
+        'category' => 'unknown',
     ], 'invalid diagnosis fabricated boundary measurements');
     foreach (['secret-sentinel', false, 1] as $invalid) {
         put($directory . '/sync.log', $log(array_replace($entry, ['status' => 'error', 'catalog_diagnostic' => $invalid]),
@@ -116,6 +116,72 @@ namespace {
     put($directory . '/sync.log', $log($entry + ['catalog_diagnostic' => $diagnostic], '2026-09-22T05:00:00+00:00'));
     expect(SupplySyncStatus::snapshot()['sources'][0]['actual']['catalog_diagnostic'] === null,
         'successful history displayed a stale directory failure');
+    expect(!class_exists('Pika\\LocalExtensions\\PikaSupplySync\\Service\\UpstreamFailure', false),
+        'manager diagnostic fixture unexpectedly loaded Supply classes');
+    $observation = ['category' => 'business', 'stage' => 'detail', 'remote_reason' => 'not_shared', 'http_status' => 200, 'curl_code' => 0,
+        'elapsed_ms' => 63, 'attempts' => 1, 'received_bytes' => 85,
+        'timings_ms' => ['dns' => 1, 'connect' => 8, 'tls' => 17, 'first_byte' => 44, 'total' => 62],
+        'response_structure' => ['business_code' => -1, 'data_type' => 'null']];
+    $diagnosticRow = ['code_hash' => 'abcdef123456', 'message' => '远端返回业务失败', 'diagnostics' => $observation];
+    $request = $observation + ['attempt_history' => [$observation, $observation, $observation]];
+    $detailedEntry = array_replace($entry, ['status' => 'partial', 'failed' => 2, 'phase' => 'actions',
+        'error_total' => 23, 'errors_truncated' => true, 'errors' => array_fill(0, 20, $diagnosticRow),
+        'failure_diagnostic' => $observation,
+        'request_diagnostics' => ['detail' => ['count' => 9, 'last' => $request, 'last_failure' => $request]]]);
+    put($directory . '/sync.log', $log($detailedEntry, '2026-09-25T01:00:00+00:00'));
+    $detailed = SupplySyncStatus::snapshot()['sources'][0]['actual'];
+    expect($detailed['failed'] === 2 && $detailed['error_total'] === 23 && $detailed['errors_truncated'] === true
+        && count($detailed['errors']) === 20 && $detailed['errors'][0] === $diagnosticRow
+        && $detailed['failure_diagnostic'] === $observation && $detailed['phase'] === 'actions'
+        && $detailed['request_diagnostics']['detail']['count'] === 9
+        && count($detailed['request_diagnostics']['detail']['last']['attempt_history']) === 3,
+        'bounded diagnostics lost the exact total or confused failed products with events');
+    foreach (['transport', 'http_retryable', 'http_rejected', 'credentials', 'business', 'content_type',
+        'json', 'schema', 'response_size', 'budget', 'unknown', 'item_unavailable', 'item_invalid'] as $category) {
+        $row = ['message' => '货源同步失败，未执行商品写入', 'diagnostics' => ['category' => $category, 'stage' => 'catalog']];
+        put($directory . '/sync.log', $log(array_replace($entry, ['status' => 'error', 'error_total' => 1,
+            'errors_truncated' => false, 'errors' => [$row]]), '2026-09-25T01:00:00+00:00'));
+        $result = SupplySyncStatus::snapshot()['sources'][0]['actual'];
+        expect($result['errors'] === [$row] && $result['error_total'] === 1 && $result['errors_truncated'] === false,
+            'source-level diagnostic category or missing product hash was lost');
+    }
+    $unsafeObservation = ['category' => 'secret-sentinel', 'stage' => 'secret-sentinel', 'remote_reason' => 'secret-sentinel',
+        'http_status' => '200', 'curl_code' => 1000, 'elapsed_ms' => -1, 'attempts' => 4, 'received_bytes' => 16842753,
+        'timings_ms' => ['dns' => 0, 'connect' => -1, 'tls' => '17', 'first_byte' => 480001, 'total' => null, 'secret' => 'secret-sentinel'],
+        'response_structure' => ['business_code' => 'secret-sentinel', 'data_type' => 'secret-sentinel',
+            'data_count' => 10001, 'first_children_type' => [], 'first_children_count' => -1, 'secret' => 'secret-sentinel'],
+        'url' => 'secret-sentinel', 'headers' => ['secret-sentinel'], 'body' => 'secret-sentinel'];
+    $unsafeEntry = array_replace($entry, ['status' => 'partial', 'failed' => 4, 'error_total' => 1,
+        'errors_truncated' => false, 'errors' => [['code_hash' => 'secret-sentinel', 'message' => 'secret-sentinel',
+            'diagnostics' => $unsafeObservation]], 'failure_diagnostic' => $unsafeObservation,
+        'request_diagnostics' => ['secret-sentinel' => ['count' => 1], 'detail' => ['count' => '9',
+            'last' => $unsafeObservation, 'last_failure' => ['stage' => 'image', 'url' => 'secret-sentinel']]]]);
+    put($directory . '/sync.log', $log($unsafeEntry, '2026-09-25T01:00:00+00:00'));
+    $safe = SupplySyncStatus::snapshot()['sources'][0]['actual'];
+    expect(!str_contains(json_encode($safe), 'secret-sentinel') && $safe['failed'] === 4
+        && $safe['errors'] === [['diagnostics' => ['category' => 'unknown', 'remote_reason' => 'unknown']]]
+        && $safe['request_diagnostics'] === [], 'diagnostic whitelist leaked secrets or fabricated missing observations');
+    foreach ([null, false, 'secret-sentinel', 1] as $invalidDiagnostics) {
+        put($directory . '/sync.log', $log(array_replace($entry, ['status' => 'partial', 'failed' => 4,
+            'error_total' => '1', 'errors_truncated' => 'true', 'errors' => $invalidDiagnostics,
+            'failure_diagnostic' => $invalidDiagnostics, 'request_diagnostics' => $invalidDiagnostics]), '2026-09-25T01:00:00+00:00'));
+        $safe = SupplySyncStatus::snapshot()['sources'][0]['actual'];
+        expect($safe['failed'] === 4 && $safe['errors'] === [] && $safe['error_total'] === null
+            && $safe['errors_truncated'] === null && $safe['failure_diagnostic'] === null
+            && $safe['request_diagnostics'] === [], 'malformed diagnostic erased legacy result or invented zero');
+    }
+    put($directory . '/sync.log', $log(array_replace($detailedEntry, ['error_total' => 21, 'errors_truncated' => false,
+        'errors' => array_fill(0, 21, $diagnosticRow), 'request_diagnostics' => ['detail' => ['count' => 9,
+            'last' => $observation + ['attempt_history' => array_fill(0, 4, $observation)]]]]), '2026-09-25T01:00:00+00:00'));
+    $bounded = SupplySyncStatus::snapshot()['sources'][0]['actual'];
+    expect($bounded['error_total'] === 21 && count($bounded['errors']) === 20 && $bounded['errors_truncated'] === true
+        && count($bounded['request_diagnostics']['detail']['last']['attempt_history']) === 3,
+        'oversized diagnostics escaped the fixed item or attempt limit');
+    put($directory . '/sync.log', $log(array_replace($entry, ['status' => 'partial', 'failed' => 4]), '2026-09-25T01:00:00+00:00'));
+    $legacyDiagnostics = SupplySyncStatus::snapshot()['sources'][0]['actual'];
+    expect($legacyDiagnostics['failed'] === 4 && $legacyDiagnostics['error_total'] === null
+        && $legacyDiagnostics['errors'] === [] && $legacyDiagnostics['request_diagnostics'] === [],
+        'old count-only history acquired inferred item causes');
     chmod($directory . '/sync.log', 0644);
     expect(SupplySyncStatus::snapshot()['availability'] === 'unavailable', 'unsafe mode accepted');
     chmod($directory . '/sync.log', 0600);
