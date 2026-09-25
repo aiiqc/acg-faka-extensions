@@ -30,7 +30,7 @@ namespace {
         fwrite(STDERR, "FAIL: Pika Config did not autoload\n");
         exit(1);
     }
-    if (($config::INFO['VERSION'] ?? null) !== '1.1.6'
+    if (($config::INFO['VERSION'] ?? null) !== '1.1.7'
         || ($config::INFO['RENDER'] ?? null) !== \App\Consts\Render::ENGINE_SMARTY
         || ($config::THEME['INDEX'] ?? null) !== 'Index/Index.html'
         || ($config::SUBMIT[0]['name'] ?? null) !== 'icp') {
@@ -64,11 +64,14 @@ namespace {
         function user_header_nav() { return $GLOBALS['fixtureNavigation']; }
         function user_nav_icon($nav, $class) { return '<i class="fa-duotone fa-regular fa-list ' . htmlspecialchars($class, ENT_QUOTES) . '"></i>'; }
         $input = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
-        $body = static fn(string $template): string => preg_replace('/#\{include file="\.\/(?:Header|Footer)\.html"\}/', '', $template);
+        // A string template has no directory; resolve its category include through templateDir.
+        $body = static fn(string $template): string => str_replace('file="./CategoryNode.html"', 'file="CategoryNode.html"',
+            preg_replace('/#\{include file="\.\/(?:Header|Footer)\.html"\}/', '', $template));
         $source = $body($input['template']);
         $smarty = new \Smarty();
         $smarty->left_delimiter = '#{';
         $smarty->right_delimiter = '}';
+        $smarty->setTemplateDir($themeRoot . '/Index');
         $compile = sys_get_temp_dir() . '/pika-purchase-' . getmypid();
         mkdir($compile, 0700);
         $smarty->setCompileDir($compile);
@@ -102,9 +105,21 @@ namespace {
             $index = $smarty->fetch('string:' . $body($input['indexTemplate']));
         }
         $storefronts = [];
+        $brandNames = [
+            'zh-six' => '松果数字商店',
+            'en-short' => 'Pine Shop',
+            'zh-long' => '松果数字创意与实用工具精选商店',
+            'en-long' => 'Pine Digital Creative Goods and Useful Tools Store',
+            'unbroken' => 'PineDigitalCreativeGoodsAndUsefulToolsStoreWithoutSpaces',
+        ];
+        $demo = ($input['demo'] ?? false) === true;
         if (isset($input['headerTemplate'], $input['footerTemplate'])) {
             require_once getenv('ACG_FAKA_OFFICIAL_ROOT') . '/app/Consts/Hook.php';
-            foreach (['guest', 'member', 'long'] as $identity) {
+            $variants = ['default' => null] + $brandNames;
+            foreach ($variants as $brandKey => $brandName) foreach (['guest', 'member', 'long'] as $identity) {
+                if ($brandKey !== 'default' && $identity === 'long') {
+                    continue;
+                }
                 $GLOBALS['fixtureNavigation'] = [
                     ['name' => '商品首页', 'url' => '/', 'match' => '/'],
                     ['name' => '购买记录', 'url' => '/user/personal/purchaseRecord', 'match' => '/user/personal/purchaseRecord'],
@@ -114,20 +129,27 @@ namespace {
                 }
                 $smarty->assign([
                     'item' => null, 'user' => $identity === 'guest' ? null : [
-                        'username' => $identity === 'long' ? 'SyntheticAccountLongName' : '合成用户',
+                        'username' => $identity === 'long' ? 'SyntheticAccountLongName' : ($demo ? '示例用户' : '合成用户'),
                         'balance' => '12.34', 'avatar' => '/fixture.svg',
                     ],
-                    'config' => ['title' => '合成完整页面验证', 'keywords' => '', 'description' => '',
-                        'shop_name' => $identity === 'long' ? '合成长名称的商品与服务商店' : '合成商店',
-                        'currency_symbol' => '¥', 'notice' => '仅使用合成数据'],
-                    'category' => [], 'setting' => ['icp' => ''],
+                    'config' => ['title' => $demo ? '松果数字商店' : '合成完整页面验证', 'keywords' => '', 'description' => '',
+                        'shop_name' => $brandName ?? ($identity === 'long' ? '合成长名称的商品与服务商店' : '合成商店'),
+                        'currency_symbol' => '¥', 'notice' => $demo
+                            ? '欢迎来到松果数字商店。这里展示创意素材、学习资料与实用工具；商品、库存与价格均为演示数据。'
+                            : '仅使用合成数据'],
+                    'category' => $demo ? array_map(static fn($entry) => [
+                        'id' => $entry[0], 'name' => $entry[1], 'commodity_count' => 2,
+                        'icon' => '/app/View/User/Theme/Pika/Assets/brand-mark.svg', 'children' => [],
+                    ], [[1, '创意素材'], [2, '学习资料'], [3, '实用工具']]) : [],
+                    'categoryId' => 1, 'setting' => ['icp' => ''],
                 ]);
-                $storefronts[$identity] = $smarty->fetch('string:' . $input['headerTemplate'])
+                $storefronts[$identity . ($brandKey === 'default' ? '' : '/' . $brandKey)] = $smarty->fetch('string:' . $input['headerTemplate'])
                     . $smarty->fetch('string:' . $body($input['indexTemplate']))
                     . $smarty->fetch('string:' . $input['footerTemplate']);
             }
         }
-        fwrite(STDOUT, json_encode(['item' => $item, 'pages' => $fixtures, 'index' => $index, 'storefronts' => $storefronts], JSON_THROW_ON_ERROR));
+        fwrite(STDOUT, json_encode(['item' => $item, 'pages' => $fixtures, 'index' => $index,
+            'storefronts' => $storefronts, 'brandNames' => $brandNames], JSON_THROW_ON_ERROR));
     } else {
         fwrite(STDOUT, "PASS local theme config behavior\n");
     }

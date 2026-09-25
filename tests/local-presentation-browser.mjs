@@ -120,6 +120,8 @@ try {
 }
 
 async function checkPurchasePresentation() {
+    const demo = process.env.PIKA_QA_DEMO === '1';
+    assert.ok(!demo || phase === 'after', 'Public demo must use the repaired working tree');
     const baselineRef = phase === 'parent' ? 'HEAD^' : 'HEAD';
     const revision = execFileSync('git', ['rev-parse', baselineRef], {cwd: root, encoding: 'utf8'}).trim();
     const read = relative => phase === 'after'
@@ -133,7 +135,7 @@ async function checkPurchasePresentation() {
         'acg-faka-php83-integration:20260828', 'php', '-d', 'display_errors=stderr',
         '/repo/tests/local-theme-config-behavior.php', '--purchase-fixtures',
     ], {input: JSON.stringify({template: read('themes/Pika/Index/Item.html'), indexTemplate: read('themes/Pika/Index/Index.html'),
-        headerTemplate: read('themes/Pika/Index/Header.html'), footerTemplate: read('themes/Pika/Index/Footer.html')}), encoding: 'utf8', timeout: 30000}));
+        headerTemplate: read('themes/Pika/Index/Header.html'), footerTemplate: read('themes/Pika/Index/Footer.html'), demo}), encoding: 'utf8', timeout: 30000}));
     const readyUrl = source => source.match(/#\{ready\("([^"]+)"\)\}/)?.[1];
     const indexUrl = readyUrl(read('themes/Pika/Index/Index.html'));
     const itemUrl = fixtures.pages.normal.match(/data-fixture-ready="([^"]+)"/)?.[1].replaceAll('&amp;', '&');
@@ -153,13 +155,20 @@ async function checkPurchasePresentation() {
     const failures = [], errors = [], requests = [];
     // The official commodity validator permits stock up to signed INT_MAX.
     const stocks = [8, 999, 1000, 9999, 10000, 2147483647];
-    const stockItems = stocks.flatMap((stock, index) => ['合成商品', '合成长商品标题用于检查库存与价格保持独立'].map((name, variant) => ({
+    const stockItems = demo ? [
+        ['手绘图标素材包', '12.00', 48], ['柔和彩色壁纸合集', '8.00', 120],
+        ['每日阅读计划模板', '6.00', 64], ['语言学习打卡手册', '9.00', 80],
+        ['个人预算表格模板', '15.00', 32], ['轻量项目管理清单', '5.00', 96],
+    ].map(([name, price, stock], index) => ({...fixtures.item, id: 100 + index, name, price, stock,
+        cover: '/app/View/User/Theme/Pika/Assets/storefront-placeholder.svg', order_sold: 0}))
+        : stocks.flatMap((stock, index) => ['合成商品', '合成长商品标题用于检查库存与价格保持独立'].map((name, variant) => ({
         ...fixtures.item, id: 100 + index * 2 + variant, stock, name,
         order_sold: variant ? 0 : 4321, price: '2.50',
     })));
     const stockWidths = [1440, 1358, 1200, 1199, 1101, 1100, 1024, 992, 991, 768, 767, 575, 390, 320];
     const purchaseWidths = [1440, 390, 320];
-    const layouts = [], headers = [], purchases = [];
+    const layouts = [], headers = [], purchases = [], brandCases = [], demoScreenshots = [];
+    const expectedShopNames = new WeakMap();
     const check = (condition, description) => { if (!condition) failures.push(description); };
     try {
         const context = await browser.newContext({serviceWorkers: 'block', reducedMotion: 'reduce'});
@@ -173,12 +182,21 @@ async function checkPurchasePresentation() {
             const resource = assetBodies.get(url.pathname + url.search);
             if (resource !== undefined) return route.fulfill({contentType: url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript', body: resource});
             if (url.pathname === '/item/7') return route.fulfill({contentType: 'text/html', body: html(fixtures.pages[url.searchParams.get('case') || 'normal'])});
-            if (url.pathname === '/') return route.fulfill({contentType: 'text/html', body: fixtures.storefronts[url.searchParams.get('identity') || 'member']});
+            if (url.pathname === '/') {
+                const key = (url.searchParams.get('identity') || 'member') + (url.searchParams.has('brand') ? '/' + url.searchParams.get('brand') : '');
+                assert.ok(fixtures.storefronts[key], 'known synthetic storefront');
+                return route.fulfill({contentType: 'text/html', body: fixtures.storefronts[key]});
+            }
             // Serve only public static assets, never a backend or a credential-bearing file.
             if (/^\/assets\/[A-Za-z0-9_./-]+\.(css|woff2?|ttf|png|jpg)$/.test(url.pathname)) {
                 const file = fs.realpathSync(path.join(official, url.pathname));
                 assert.ok(file.startsWith(official + '/assets/'));
                 return route.fulfill({contentType: url.pathname.endsWith('.css') ? 'text/css' : 'application/octet-stream', body: fs.readFileSync(file)});
+            }
+            if (demo && ['brand-mark.svg', 'storefront-placeholder.svg', 'pika-favicon-1.0.3.png', 'topfans-logo.png', 'topfans-bg-poster.jpg']
+                .some(name => url.pathname === '/app/View/User/Theme/Pika/Assets/' + name)) {
+                const filename = /poster|placeholder/.test(url.pathname) ? 'storefront-placeholder.svg' : 'brand-mark.svg';
+                return route.fulfill({contentType: 'image/svg+xml', body: fs.readFileSync(path.join(root, 'themes/Pika/Assets', filename))});
             }
             if (['pika-favicon-1.0.3.png', 'topfans-logo.png', 'topfans-bg-poster.jpg']
                 .some(name => url.pathname === '/app/View/User/Theme/Pika/Assets/' + name)) {
@@ -236,11 +254,13 @@ async function checkPurchasePresentation() {
             await page.addScriptTag({path: path.join(official, 'assets/common/js/bootstrap/bootstrap.bundle.min.js')});
             await page.evaluate(() => window.__pikaThemeRuntime?.init());
         };
-        const openStorefront = async (page, width, identity) => {
+        const openStorefront = async (page, width, identity, brandKey) => {
+            expectedShopNames.set(page, brandKey ? fixtures.brandNames[brandKey]
+                : identity === 'long' ? '合成长名称的商品与服务商店' : '合成商店');
             await page.setViewportSize({width, height: 1000});
-            await page.goto(`https://pika-fixture.invalid/?identity=${identity}`);
+            await page.goto(`https://pika-fixture.invalid/?identity=${identity}${brandKey ? '&brand=' + brandKey : ''}`);
             await setup(page, 'normal');
-            await page.locator('.fbfaka-category-list').evaluate((node, count) => {
+            if (!demo) await page.locator('.fbfaka-category-list').evaluate((node, count) => {
                 const category = document.createElement('a');
                 category.className = 'chip category-leaf switch-category';
                 category.dataset.id = '1';
@@ -260,6 +280,32 @@ async function checkPurchasePresentation() {
                     return {left, right, top, bottom, width, height};
                 };
                 const visible = node => node.getClientRects().length > 0;
+                const brand = document.querySelector('.navbar-brand > span');
+                const brandStyle = getComputedStyle(brand);
+                const brandRange = document.createRange();
+                brandRange.selectNodeContents(brand);
+                const textBoxes = range => [...range.getClientRects()].filter(rect => rect.width && rect.height)
+                    .map(({left, right, top, bottom}) => ({left, right, top, bottom}));
+                const characters = [];
+                let offset = 0;
+                for (const character of brand.textContent) {
+                    const start = offset;
+                    offset += character.length;
+                    if (/\s/.test(character)) continue;
+                    const range = document.createRange();
+                    range.setStart(brand.firstChild, start);
+                    range.setEnd(brand.firstChild, offset);
+                    characters.push({offset: start, rects: textBoxes(range)});
+                }
+                const clippingAncestors = [];
+                let ancestorVisible = true;
+                for (let node = brand; node; node = node.parentElement) {
+                    const style = getComputedStyle(node);
+                    ancestorVisible &&= style.display !== 'none' && style.visibility === 'visible' && Number(style.opacity) > 0;
+                    const clipsX = /hidden|clip|scroll|auto/.test(style.overflowX);
+                    const clipsY = /hidden|clip|scroll|auto/.test(style.overflowY);
+                    if (clipsX || clipsY) clippingAncestors.push({selector: node.className, clipsX, clipsY, ...box(node)});
+                }
                 const controls = [...document.querySelectorAll('.navbar-brand, .brand-logo, .navbar-toggler, .user-info-box .dropdown-toggle, .user-login-box .btn')]
                     .filter(visible).map(node => ({selector: node.className, ...box(node)}));
                 const links = [...document.querySelectorAll('#navbarNav .nav-link')].filter(visible).map(node => {
@@ -273,11 +319,32 @@ async function checkPurchasePresentation() {
                 return {document: document.documentElement.scrollWidth, body: document.body.scrollWidth,
                     viewport: document.documentElement.clientWidth, innerWidth, scrollbarWidth: innerWidth - document.documentElement.clientWidth,
                     nav: box(document.querySelector('.navbar-acg')), controls, links, footer: box(footer),
+                    brand: {text: brand.textContent, ...box(brand), fontSize: parseFloat(brandStyle.fontSize),
+                        ancestorVisible, rects: textBoxes(brandRange), characters, clippingAncestors},
                     footerRects: [...footerRange.getClientRects()].filter(rect => rect.width && rect.height)
                         .map(rect => ({left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom}))};
             });
             headers.push({label, ...geometry});
             check(geometry.document <= geometry.viewport && geometry.body <= geometry.viewport, `${label}: document and body fit available clientWidth`);
+            const inside = (inner, outer) => inner.left >= outer.left - 1 && inner.right <= outer.right + 1
+                && inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1;
+            const separate = (a, b) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+            const brand = geometry.brand;
+            check(brand.text === expectedShopNames.get(page), `${label}: exact full shop name`);
+            check(brand.ancestorVisible && brand.width > 0 && brand.height > 0 && brand.fontSize >= 12
+                && brand.rects.length > 0 && brand.characters.every(character => character.rects.length > 0),
+                `${label}: shop name and every non-space character visibly rendered`);
+            const brandRects = [...brand.rects, ...brand.characters.flatMap(character => character.rects)];
+            // Font glyphs can exceed an unclipped line box vertically; actual clipping is checked below.
+            check(brandRects.every(rect => rect.left >= brand.left - 1 && rect.right <= brand.right + 1 && inside(rect, geometry.nav)
+                && rect.left >= -1 && rect.right <= geometry.viewport + 1), `${label}: complete shop-name Range fits available brand width and navbar`);
+            check(brandRects.every(rect => brand.clippingAncestors.every(ancestor =>
+                (!ancestor.clipsX || rect.left >= ancestor.left - 1 && rect.right <= ancestor.right + 1)
+                && (!ancestor.clipsY || rect.top >= ancestor.top - 1 && rect.bottom <= ancestor.bottom + 1))),
+                `${label}: no shop-name character clipped by overflow ancestors`);
+            for (const neighbor of [...geometry.controls.filter(control => !control.selector.includes('navbar-brand')), ...geometry.links]) {
+                check(brandRects.every(rect => separate(rect, neighbor)), `${label}: shop name does not overlap logo, account, toggle or navigation`);
+            }
             check(geometry.footer.width > 0 && geometry.footer.left >= -1 && geometry.footer.right <= geometry.viewport + 1
                 && geometry.footerRects.length > 0 && geometry.footerRects.every(rect => rect.left >= geometry.footer.left - 1
                     && rect.right <= geometry.footer.right + 1), `${label}: full footer fits available clientWidth`);
@@ -301,11 +368,12 @@ async function checkPurchasePresentation() {
             }
             return geometry;
         };
-        const checkHeader = async (page, width, identity, layout) => {
+        const checkHeader = async (page, width, identity, layout, brandKey) => {
             await page.evaluate(() => scrollTo(0, 0));
-            const label = `${width}/${identity}/${layout}`;
+            const label = `${width}/${identity}/${layout}${brandKey ? '/' + brandKey : ''}`;
+            const capture = !brandKey && layout === 'list' && identity !== 'long' && [1440, 390, 320].includes(width);
             const closed = await headerGeometry(page, label + '/closed');
-            if ([992, 1200, 1358, 390, 320].includes(width)) {
+            if (capture) {
                 await page.screenshot({path: path.join(output, `${phase}-nav-${width}-${identity}-${layout}-closed.png`)});
             }
             const toggle = page.locator('.navbar-toggler');
@@ -323,7 +391,7 @@ async function checkPurchasePresentation() {
                 await page.locator('#navbarNav .item-search-input').fill('菜单搜索');
                 await page.locator('#navbarNav .item-search-input').press('Enter');
                 check(await page.evaluate(() => fixtureSearches.at(-1).keywords === '菜单搜索'), `${label}: menu source search reaches commodity stub`);
-                await page.screenshot({path: path.join(output, `${phase}-nav-${width}-${identity}-${layout}-open.png`)});
+                if (capture) await page.screenshot({path: path.join(output, `${phase}-nav-${width}-${identity}-${layout}-open.png`)});
                 await page.keyboard.press('Escape');
                 await page.waitForFunction(() => !document.querySelector('#navbarNav').matches('.show, .collapsing'));
                 check(await toggle.getAttribute('aria-expanded') === 'false', `${label}: Escape closes menu and updates aria`);
@@ -360,6 +428,26 @@ async function checkPurchasePresentation() {
             check(await page.locator('.item-list').getAttribute('data-fb-view') === layout, `${label}: search preserves selected view`);
             check(await page.locator('.fb-view-toggle').getAttribute('aria-pressed') === String(layout === 'grid'), `${label}: view button aria matches layout`);
         };
+        if (demo) {
+            for (const width of [1440, 375]) {
+                const page = await context.newPage();
+                page.on('pageerror', error => errors.push(error.message));
+                await openStorefront(page, width, 'guest', 'zh-six');
+                await headerGeometry(page, `${width}/guest/demo/closed`);
+                const screenshot = path.join(output, `demo-storefront-${width}.png`);
+                await page.screenshot({path: screenshot, fullPage: true});
+                demoScreenshots.push(screenshot);
+                await page.close();
+            }
+            const result = {phase, demo, revision, workingTree: true, scrollbars, screenshots: demoScreenshots,
+                headers, failures, errors, resourceUrls: [indexUrl, cssUrl, pikaUrl],
+                boundary: 'Synthetic shop, categories, products, stock and prices rendered by real Smarty Header/Index/Footer and Bootstrap/Pika CSS/JS. Media responses use repository brand-mark.svg and storefront-placeholder.svg; video is empty. No production data or live API.'};
+            fs.writeFileSync(path.join(output, 'demo-storefront-computed.json'), JSON.stringify(result, null, 2));
+            console.log(JSON.stringify({...result, headers: headers.length}));
+            assert.deepEqual(errors, [], 'demo has no unexpected requests or browser errors');
+            assert.equal(failures.length, 0, 'demo header geometry acceptance');
+            return;
+        }
         for (const width of stockWidths) {
             const page = await context.newPage();
             page.on('pageerror', error => errors.push(error.message));
@@ -433,6 +521,16 @@ async function checkPurchasePresentation() {
                 await page.keyboard.press('ArrowDown');
             } else await page.locator(`a[href="${destination}"]`).focus();
             await Promise.all([page.waitForURL(`https://pika-fixture.invalid${destination}`), page.keyboard.press('Enter')]);
+            await page.close();
+        }
+        for (const width of [320, 375, 390, 768, 1199, 1200, 1440]) for (const identity of ['guest', 'member']) {
+            const page = await context.newPage();
+            page.on('pageerror', error => errors.push(error.message));
+            for (const brandKey of Object.keys(fixtures.brandNames)) {
+                await openStorefront(page, width, identity, brandKey);
+                await checkHeader(page, width, identity, 'list', brandKey);
+                brandCases.push({width, identity, brandKey, shopName: fixtures.brandNames[brandKey]});
+            }
             await page.close();
         }
         // Parent comparison isolates stock; current before/after retain all purchase gates.
@@ -514,7 +612,7 @@ async function checkPurchasePresentation() {
         }
         if (phase === 'after') {
             for (const resource of [indexUrl, itemUrl, cssUrl]) {
-                assert.match(resource, resource === cssUrl ? /rev=20260915-scroll1$/ : /rev=20260914$/);
+                assert.match(resource, resource === cssUrl ? /theme=1\.1\.7&rev=20260925-brand1$/ : /rev=20260914$/);
                 assert.ok(requests.includes(resource), `actual resource requested: ${resource}`);
             }
             for (const part of ['Index', 'Common', 'Authentication']) {
@@ -526,7 +624,7 @@ async function checkPurchasePresentation() {
         const result = {phase, revision, workingTree: phase === 'after', scrollbars, browserVersion: browser.version(),
             cases: purchases.length,
             stockCases: layouts.length * stockItems.length, headerCases: new Set(headers.map(header => header.label.replace(/\/(open|closed|reclosed)$/, ''))).size,
-            layouts, headers, purchases, failures, errors, resourceUrls: [indexUrl, itemUrl, cssUrl, pikaUrl],
+            brandCases, layouts, headers, purchases, failures, errors, resourceUrls: [indexUrl, itemUrl, cssUrl, pikaUrl],
             boundary: 'Full synthetic Smarty Header/Index/Footer with real Bootstrap/Pika scripts and isolated purchase-body scenarios. Classic mode removes only Playwright default --hide-scrollbars and verifies native 320/305 geometry. No real session, API, payment, video playback, HTTP cache, or physical-device proof.'};
         fs.writeFileSync(path.join(output, `${phase}-purchase-computed.json`), JSON.stringify(result, null, 2));
         console.log(JSON.stringify({...result, layouts: layouts.length, headers: headers.length, failureCount: failures.length, failures: failures.slice(0, 12)}));

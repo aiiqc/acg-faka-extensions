@@ -118,6 +118,7 @@ textarea {
 
 .navbar-acg .navbar-brand {
   min-width: 0;
+  overflow: visible;
   color: var(--fb-pink-deep);
   font-size: 1.35rem;
   font-weight: 800;
@@ -125,9 +126,14 @@ textarea {
 
 .navbar-acg .navbar-brand > span {
   color: var(--fb-pink-deep) !important;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .navbar-acg .brand-logo {
@@ -1440,7 +1446,6 @@ body > footer,
   .navbar-acg .navbar-brand {
     flex: 1 1 0;
     margin-right: auto;
-    overflow: hidden;
   }
 
   .navbar-acg .navbar-collapse {
@@ -1599,7 +1604,6 @@ body > footer,
   }
 
   .navbar-acg .navbar-brand {
-    max-width: 40vw;
     font-size: 1.12rem;
   }
 
@@ -1751,14 +1755,6 @@ body > footer,
 
 /* Explicit 390px layout gate */
 @media (max-width: 390px) {
-  .navbar-acg .navbar-brand {
-    max-width: 33vw;
-  }
-
-  .navbar-acg .navbar-brand > span {
-    max-width: 22vw;
-  }
-
   .navbar-acg .user-login-box .btn {
     display: inline-flex;
     width: 36px;
@@ -2003,7 +1999,7 @@ body > footer,
   }
 
   .navbar-acg .navbar-brand {
-    flex: 0 1 206px;
+    flex: 0 1 clamp(206px, 24vw, 320px);
     min-width: 0;
     min-height: 40px;
     margin-right: 16px;
@@ -2704,14 +2700,11 @@ body > footer,
   }
 
   .navbar-acg .navbar-brand {
-    width: 40px;
-    max-width: 40px;
-    margin-right: auto;
-    flex: 0 0 40px;
-  }
-
-  .navbar-acg .navbar-brand > span {
-    display: none;
+    /* Keep the complete name above the account and menu controls. */
+    width: 100%;
+    max-width: 100%;
+    margin-right: 0;
+    flex: 1 0 100%;
   }
 
   .navbar-acg .lang-switch {
@@ -2721,7 +2714,7 @@ body > footer,
   .navbar-acg .user-login-box,
   .navbar-acg .user-info-box {
     position: static;
-    margin: 0 !important;
+    margin: 0 0 0 auto !important;
   }
 
   .navbar-acg .user-login-box {
@@ -3090,6 +3083,7 @@ body.uc-body {
 .fbfaka-footer {
   flex: 0 0 auto;
   margin-top: auto;
+  overflow-wrap: anywhere;
   border-top: 2px solid var(--fb-ink);
   background: rgba(255, 253, 247, 0.94);
 }

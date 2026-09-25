@@ -52,9 +52,9 @@ test('Pika theme uses Metadata.php as its single runtime metadata and version so
     assert.match(config, /const INFO = Metadata::INFO;/);
     assert.match(config, /const SUBMIT = Metadata::SUBMIT;/);
     assert.match(config, /const THEME = Metadata::THEME;/);
-    assert.match(metadata, /public const VERSION = '1\.1\.6';/);
+    assert.match(metadata, /public const VERSION = '1\.1\.7';/);
     const version = metadata.match(/public const VERSION = '([^']+)';/)?.[1];
-    assert.equal(version, '1.1.6');
+    assert.equal(version, '1.1.7');
     assert.equal(manifest.version, version, 'distribution manifest must mirror the runtime metadata version');
     assert.equal(manifest.theme_key, 'Pika');
     assert.equal(manifest.namespace, 'App\\View\\User\\Theme\\Pika\\');
@@ -64,7 +64,7 @@ test('Pika theme uses Metadata.php as its single runtime metadata and version so
         const header = fs.readFileSync(path.join(themeRoot, relative), 'utf8');
         assert.match(
             header,
-            new RegExp(`href="/app/View/User/Theme/Pika/Assets/pika\\.css\\?theme=${version.replaceAll('.', '\\.') }&amp;rev=20260915-scroll1"`),
+            new RegExp(`href="/app/View/User/Theme/Pika/Assets/pika\\.css\\?theme=${version.replaceAll('.', '\\.') }&amp;rev=20260925-brand1"`),
             `${relative} must retain the theme version and invalidate the changed CSS resource`,
         );
         assert.doesNotMatch(header, /["']\/app\/View\/User\/Theme\/Pika\/Assets\/pika\.css["']/);
@@ -273,7 +273,7 @@ test('user-rules navigation survives the asynchronous storefront layout', () => 
     const storefront = fs.readFileSync(path.join(assetRoot, 'index.js'), 'utf8');
 
     assert.match(header, /href="\/#fbfaka-rules" data-pika-rules-navigation/);
-    assert.match(index, /#\{ready\("\/app\/View\/User\/Theme\/Pika\/Assets\/index\.js\?pika=1\.1\.6&rev=20260914"\)\}/);
+    assert.match(index, /#\{ready\("\/app\/View\/User\/Theme\/Pika\/Assets\/index\.js\?pika=1\.1\.7&rev=20260914"\)\}/);
     assert.match(storefront, /document\.querySelectorAll\("\[data-pika-rules-navigation\]"\)/);
     assert.match(storefront, /var rulesScrollPending = Boolean\(/);
     assert.match(storefront, /activeRequest !== 0/);
