@@ -1,5 +1,7 @@
 # Acg-Faka Extensions
 
+> 当前 main 源码：PikaSupplySync `1.1.18` 增加[手动商品库存未知保护](extensions/PikaSupplySync/Wiki/README.md#手动商品库存未知保护)，仅限原生非镜像 basic 自然同步。旧 `v0.1.0-preview.1` 固定附件不含此修复；本批不新建 tag／Release，安装与回退先看[说明](docs/USER_INSTALL.md)。
+
 ![Pika 1.1.7 前台主题演示](docs/images/pika-theme-117-desktop.png)
 
 真实主题模板、CSS 和 JS 渲染的示例商店，全部商品与价格均为虚构，使用中性素材；不是生产或交易截图。[手机宽度演示](docs/images/pika-theme-117-mobile.png) · [店名与公告外链设置](docs/USER_INSTALL.md#851-店名与公告外部链接)

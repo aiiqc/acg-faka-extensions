@@ -11,9 +11,9 @@ final class CatalogPlanner
     private const MAX_ITEMS = 10000;
 
     /**
-     * @return array<string, array{code:string,name:string,category:string,stock:int,item:array}>
+     * @return array<string, array{code:string,name:string,category:string,stock:?int,item:array}>
      */
-    public function flatten(mixed $tree): array
+    public function flatten(mixed $tree, bool $allowManualNullStock = false): array
     {
         if (!is_array($tree) || count($tree) > self::MAX_GROUPS) {
             throw new RuntimeException('远端商品分类结构不正确或数量过多');
@@ -33,7 +33,9 @@ final class CatalogPlanner
                 if (isset($catalog[$code])) {
                     throw new RuntimeException('远端商品编号重复：' . substr(hash('sha256', $code), 0, 12));
                 }
-                $stock = $this->stock($item['stock'] ?? null);
+                $stock = $allowManualNullStock && self::isManualNullStock($item)
+                    ? null
+                    : $this->stock($item['stock'] ?? null);
                 $catalog[$code] = [
                     'code' => $code,
                     'name' => $this->plainText($item['name'] ?? null, 255, '商品名称', true),
@@ -51,7 +53,7 @@ final class CatalogPlanner
     }
 
     /**
-     * @param array<string, array{code:string,name:string,category:string,stock:int,item:array}> $catalog
+     * @param array<string, array{code:string,name:string,category:string,stock:?int,item:array}> $catalog
      * @param array<string, array{id:int,status:int,stock:int,managed?:bool,inventory_sync?:int}> $local
      * @return array{actions:array<int,array{type:string,code:string,lane:string}>,next_cursor:string,next_priority_cursor:string,counts:array<string,int>,fuse:bool,fuse_ratio:float}
      */
@@ -72,6 +74,10 @@ final class CatalogPlanner
         $explicitZeroCount = 0;
         $activeCount = 0;
         foreach ($local as $code => $row) {
+            // Unknown stock must not dilute or trigger either zero-stock fuse.
+            if (isset($catalog[$code]) && $catalog[$code]['stock'] === null) {
+                continue;
+            }
             if (
                 ($row['managed'] ?? true)
                 && (int)($row['inventory_sync'] ?? 1) === 1
@@ -111,6 +117,9 @@ final class CatalogPlanner
             if ($row === null || !($row['managed'] ?? true)) {
                 continue;
             }
+            if ($remote !== null && $remote['stock'] === null) {
+                continue;
+            }
             $isHeldZero = isset($zeroCandidates[$code]) && ($remote === null ? $fuse : $explicitZeroFuse);
             $remoteStock = $remote === null ? 0 : (int)$remote['stock'];
             $inventorySync = (int)($row['inventory_sync'] ?? 1) === 1;
@@ -144,20 +153,23 @@ final class CatalogPlanner
             $selected = array_merge($selected, $normalSelected);
         }
         $actions = [];
-        $counts = ['sync' => 0, 'import' => 0, 'zero' => 0, 'hold_zero' => 0];
+        $counts = ['sync' => 0, 'import' => 0, 'zero' => 0, 'hold_zero' => 0, 'held_unknown' => 0];
         $prioritySelection = array_fill_keys($prioritySelected, true);
 
         foreach ($selected as $code) {
             $remote = $catalog[$code] ?? null;
             $row = $local[$code] ?? null;
-            if ($row === null) {
+            if ($row !== null && !($row['managed'] ?? true)) {
+                continue;
+            }
+            if ($remote !== null && $remote['stock'] === null) {
+                $type = 'held_unknown';
+            } elseif ($row === null) {
                 if ($options->mode === Options::MODE_FULL && $remote !== null) {
                     $type = (int)$remote['stock'] > 0 ? 'import' : 'hold_zero';
                 } else {
                     continue;
                 }
-            } elseif (!($row['managed'] ?? true)) {
-                continue;
             } elseif ($remote === null || $remote['stock'] <= 0) {
                 if ((int)($row['inventory_sync'] ?? 1) !== 1) {
                     if ($remote === null) {
@@ -193,6 +205,13 @@ final class CatalogPlanner
             'fuse' => $fuse,
             'fuse_ratio' => round($ratio, 2),
         ];
+    }
+
+    public static function isManualNullStock(array $item): bool
+    {
+        return array_key_exists('stock', $item)
+            && $item['stock'] === null
+            && ($item['delivery_way'] ?? null) === 1;
     }
 
     /** @param string[] $work @return string[] */

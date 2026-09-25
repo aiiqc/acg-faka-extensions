@@ -3408,7 +3408,7 @@ foreach ($zeroSplitCases as [$active, $explicit, $missing, $explicitHeld, $aggre
         && $splitPlan['fuse_ratio'] === round(($explicit + $missing) / $active * 100, 2),
         'zero split must preserve the aggregate fuse and ratio');
     expect(count($splitPlan['actions']) === $active, 'zero split lost or duplicated batch work');
-    $expectedCounts = ['sync' => 0, 'import' => 0, 'zero' => 0, 'hold_zero' => 0];
+    $expectedCounts = ['sync' => 0, 'import' => 0, 'zero' => 0, 'hold_zero' => 0, 'held_unknown' => 0];
     foreach ($splitPlan['actions'] as $action) {
         $expected = $expectedTypes[$action['code']];
         expect($action['type'] === $expected,
@@ -3433,6 +3433,60 @@ foreach ([0, '0', 0.0, 7, '7', 7.0] as $validStock) {
     expect($validCatalog['VALID']['stock'] === (int)$validStock, 'valid catalog stock compatibility changed');
 }
 fwrite(STDOUT, "zero split planner PASS: 9 gate cases, 8 invalid and 6 valid stock cases\n");
+
+// Nullable manual stock is an opt-in native basic-sync contract, not a zero.
+$manualNullRow = ['code' => 'U', 'name' => 'Unknown', 'stock' => null, 'delivery_way' => 1];
+$manualNullTree = [['name' => 'C', 'children' => [$manualNullRow]]];
+fails(fn() => $catalogPlanner->flatten($manualNullTree), 'shared consumers must remain strict by default');
+$unknownCatalog = $catalogPlanner->flatten($manualNullTree, true);
+expect(array_key_exists('stock', $unknownCatalog['U']) && $unknownCatalog['U']['stock'] === null,
+    'manual null must retain its identity and unknown value');
+foreach ([0, '1', true, null, 2] as $mode) {
+    fails(fn() => $catalogPlanner->flatten([['name' => 'C', 'children' => [
+        array_replace($manualNullRow, ['delivery_way' => $mode]),
+    ]]], true), 'unknown stock must require the exact integer manual delivery mode');
+}
+foreach ([[], ['stock' => false], ['stock' => -1], ['stock' => 0.5], ['stock' => 'manual'],
+    ['stock' => 'infinity'], ['stock' => ''], ['stock' => []], ['stock' => 2147483648]] as $fields) {
+    fails(fn() => $catalogPlanner->flatten([['name' => 'C', 'children' => [
+        ['code' => 'U', 'name' => 'Unknown', 'delivery_way' => 1] + $fields,
+    ]]], true), 'manual compatibility must not normalize missing or malformed stock');
+}
+foreach ([0, '0', 0.0, 7, '7', 7.0] as $stock) {
+    $known = $catalogPlanner->flatten([['name' => 'C', 'children' => [
+        array_replace($manualNullRow, ['stock' => $stock]),
+    ]]], true);
+    expect($known['U']['stock'] === (int)$stock, 'manual integer stock must not be held');
+}
+foreach ([0, 1] as $inventorySync) {
+    $unknownPlan = $catalogPlanner->plan($unknownCatalog,
+        ['U' => ['id' => 1, 'stock' => 7, 'status' => 1, 'managed' => true, 'inventory_sync' => $inventorySync]],
+        '', Options::fromArray(['mode' => 'basic', 'batch_limit' => 1]));
+    expect($unknownPlan['actions'] === [['type' => 'held_unknown', 'code' => 'U', 'lane' => 'normal']]
+        && $unknownPlan['counts']['held_unknown'] === 1 && $unknownPlan['next_cursor'] === 'U'
+        && $unknownPlan['next_priority_cursor'] === '', 'unknown must consume normal rotation regardless of inventory gate');
+}
+expect($catalogPlanner->plan($unknownCatalog, [], '', Options::fromArray(['mode' => 'basic']))['actions'] === [],
+    'basic unknown must never create a product');
+$unknownFuseCatalog = $unknownCatalog;
+$unknownFuseLocal = ['U' => ['id' => 1, 'stock' => 7, 'status' => 1, 'managed' => true, 'inventory_sync' => 1]];
+foreach (['Z' => 0, 'P' => 7] as $code => $stock) {
+    $unknownFuseCatalog[$code] = ['code' => $code, 'name' => $code, 'category' => 'C', 'stock' => $stock, 'item' => []];
+    $unknownFuseLocal[$code] = ['id' => ord($code), 'stock' => 7, 'status' => 1, 'managed' => true, 'inventory_sync' => 1];
+}
+$unknownFuseLocal['M'] = ['id' => 99, 'stock' => 7, 'status' => 1, 'managed' => true, 'inventory_sync' => 1];
+$unknownFusePlan = $catalogPlanner->plan($unknownFuseCatalog, $unknownFuseLocal, '',
+    Options::fromArray(['mode' => 'basic', 'batch_limit' => 10, 'zero_fuse_min' => 1, 'zero_fuse_percent' => 30]));
+expect($unknownFusePlan['fuse'] === true && $unknownFusePlan['fuse_ratio'] === 66.67
+    && $unknownFusePlan['counts']['held_unknown'] === 1 && $unknownFusePlan['counts']['hold_zero'] === 2,
+    'unknown must not dilute the denominator or become a missing/zero candidate');
+$hashProbe = (new ReflectionClass(SyncService::class))->newInstanceWithoutConstructor();
+$hashMethod = new ReflectionMethod(SyncService::class, 'catalogHash');
+$zeroCatalog = $unknownCatalog;
+$zeroCatalog['U']['stock'] = 0;
+expect($hashMethod->invoke($hashProbe, $unknownCatalog) !== $hashMethod->invoke($hashProbe, $zeroCatalog),
+    'catalog hash must distinguish unknown from zero');
+fwrite(STDOUT, "native manual unknown planner PASS: strict shape, presence, gates, cursor, fuse and hash\n");
 
 $unmanaged = (new CatalogPlanner())->plan(
     ['T' => ['code' => 'T', 'name' => 'T', 'category' => 'C', 'stock' => 8, 'item' => []]],

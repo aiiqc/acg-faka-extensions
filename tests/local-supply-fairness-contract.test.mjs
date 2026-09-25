@@ -95,5 +95,5 @@ test('fails malformed V4 stock closed and does not hide budget or cache integrit
     assert.doesNotMatch(item, /catch \(\\Throwable\)/);
     assert.match(wiki, /这不是进程硬截止/);
     assert.match(wiki, /systemd 模板另设 8 分钟外层上限/);
-    assert.match(wiki, /真实 unit 的截止行为仍须在 S0 canary 验证/);
+    assert.match(wiki, /真实 unit 的截止行为仍须在 目标站点验证/);
 });

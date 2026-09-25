@@ -161,7 +161,7 @@
         warning.setAttribute('role', 'status');
         section.append(title, node('p', 'text-muted mt-2',
             '调度状态：未核实；当前是否正在运行：未核实。扩展开关不代表定时器状态；以下为历史记录，不是实时进度。'), warning, content);
-        const count = value => Number.isInteger(value) && value >= 0 && value <= 40000 ? String(value) : '未记录';
+        const count = value => Number.isInteger(value) && value >= 0 && value <= 50000 ? String(value) : '未记录';
         const record = (label, entry) => {
             const block = node('div', 'local-sync-record');
             if (!entry || typeof entry !== 'object') {
@@ -170,10 +170,13 @@
             }
             const labels = {ok: '批次完成', partial: '部分完成／有失败或受限', error: '本轮失败',
                 locked: '未执行：货源锁被占用', held_empty_catalog: '未执行：空目录安全拦截'};
-            let outcome = labels[entry.status] || '结果未核实';
-            if (entry.status === 'ok' && entry.planned === 0) outcome = '本批无动作，不代表全部商品已同步';
             const applied = entry.applied || {};
-            if (entry.kind === 'actual' && entry.status === 'ok' && entry.planned !== 0
+            const selectedUnknown = [entry.planned_held_unknown, applied.held_unknown]
+                .some(value => Number.isInteger(value) && value > 0 && value <= 10000);
+            const status = entry.status === 'ok' && selectedUnknown ? 'partial' : entry.status;
+            let outcome = labels[status] || '结果未核实';
+            if (status === 'ok' && entry.planned === 0) outcome = '本批无动作，不代表全部商品已同步';
+            if (entry.kind === 'actual' && status === 'ok' && entry.planned !== 0
                 && ['sync', 'import', 'zero'].every(key => Number.isInteger(applied[key]) && applied[key] === 0)) {
                 outcome = '本批未保存商品（可能被单品开关或安全规则跳过）';
             }
@@ -183,7 +186,10 @@
             const zone = entry.timezone === 'UTC' ? 'UTC' : '历史站点时间，时区未记录';
             block.append(node('p', 'mb-1', `${label}：${outcome}`),
                 node('p', 'text-muted mb-1', `${time}（${zone}） · ${mode}${entry.origin === 'state' ? ' · 来自每源历史状态，日志可能已截断' : ''}`));
-            block.append(node('p', 'mb-0', `计划 ${count(entry.planned)}；同步保存 ${count(applied.sync)}；新建 ${count(applied.import)}；库存清零 ${count(applied.zero)}；失败／待确认 ${count(entry.failed)}`));
+            block.append(node('p', 'mb-0', `计划 ${count(entry.planned)}；同步保存 ${count(applied.sync)}；新建 ${count(applied.import)}；库存清零 ${count(applied.zero)}；未知库存保护 ${count(applied.held_unknown)}；失败／待确认 ${count(entry.failed)}`));
+            if (selectedUnknown || (Number.isInteger(entry.catalog_unknown) && entry.catalog_unknown > 0 && entry.catalog_unknown <= 10000)) {
+                block.append(node('p', 'text-warning mb-0', `目录库存未知 ${count(entry.catalog_unknown)} 项（整份目录）；本批选中未知库存 ${count(entry.planned_held_unknown)} 项。保护计数包含详情转为未知的项；未知库存项保留本地，不清零、不保存商品。`));
+            }
             const diagnostic = entry.catalog_diagnostic;
             if (entry.status === 'error' && diagnostic && typeof diagnostic === 'object' && !Array.isArray(diagnostic)) {
                 const reasons = {response_size: '目录超过 16 MiB 安全上限；缩小批量不会减少整份目录大小',

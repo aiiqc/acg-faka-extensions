@@ -308,20 +308,26 @@ final class StateStore
         if (!is_array($result)) {
             throw new RuntimeException('插件最后结果格式不正确');
         }
+        $result += ['catalog_unknown' => 0];
+        if (is_array($result['planned'] ?? null)) {
+            $result['planned'] += ['held_unknown' => 0];
+        }
         if (is_array($result['applied'] ?? null)) {
             $result['applied'] += [
                 'already_managed' => 0,
                 'held_existing_unmanaged' => 0,
+                'held_unknown' => 0,
             ];
         }
-        $this->assertKeys($result, ['status', 'catalog_total', 'planned', 'applied', 'failed', 'mass_zero_fuse']);
+        $this->assertKeys($result, ['status', 'catalog_total', 'catalog_unknown', 'planned', 'applied', 'failed', 'mass_zero_fuse']);
         if (!is_string($result['status'] ?? null) || !in_array($result['status'], ['ok', 'partial'], true)) {
             throw new RuntimeException('插件最后结果状态不正确');
         }
         return [
             'status' => $result['status'],
             'catalog_total' => $this->count($result['catalog_total'] ?? null),
-            'planned' => $this->counts($result['planned'] ?? null, ['sync', 'import', 'zero', 'hold_zero']),
+            'catalog_unknown' => $this->count($result['catalog_unknown']),
+            'planned' => $this->counts($result['planned'] ?? null, ['sync', 'import', 'zero', 'hold_zero', 'held_unknown']),
             'applied' => $this->counts($result['applied'] ?? null, [
                 'sync',
                 'import',
@@ -329,6 +335,7 @@ final class StateStore
                 'held_race',
                 'already_managed',
                 'held_existing_unmanaged',
+                'held_unknown',
             ]),
             'failed' => $this->count($result['failed'] ?? null),
             'mass_zero_fuse' => is_bool($result['mass_zero_fuse'] ?? null)

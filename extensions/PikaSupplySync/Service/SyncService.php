@@ -144,8 +144,9 @@ final class SyncService
             if ($options->syncFields !== null && !in_array(true, $options->syncFields, true)) {
                 $result = ['source_id' => $sourceId, 'status' => 'ok', 'mode' => $options->mode,
                     'dry_run' => $options->dryRun, 'selection_empty' => true,
-                    'planned' => ['sync' => 0, 'import' => 0, 'zero' => 0, 'hold_zero' => 0],
-                    'applied' => ['sync' => 0, 'import' => 0, 'zero' => 0, 'held_race' => 0,
+                    'catalog_unknown' => 0,
+                    'planned' => ['sync' => 0, 'import' => 0, 'zero' => 0, 'hold_zero' => 0, 'held_unknown' => 0],
+                    'applied' => ['sync' => 0, 'import' => 0, 'zero' => 0, 'held_unknown' => 0, 'held_race' => 0,
                         'already_managed' => 0, 'held_existing_unmanaged' => 0], 'failed' => 0];
                 $this->log($result);
                 return $result;
@@ -172,12 +173,14 @@ final class SyncService
                 $this->sourcePolicy->assertSafe($source);
                 $compact = $options->mode === Options::MODE_BASIC && (int)$source->type === 0
                     && (new PlannedCategoryMapper())->hasMirrorMapping($sourceId);
+                $allowManualNullStock = $options->mode === Options::MODE_BASIC && (int)$source->type === 0
+                    && !$compact && $targetHashes === null;
                 if ($compact) {
                     // Keep the legacy currency validation even though this projection has no prices.
                     SharedCurrency::factor($source);
                     $catalog = (new UpstreamCategoryTree())->flatten($this->gateway->categoryTree($source));
                 } else {
-                    $catalog = $planner->flatten($this->gateway->items($source));
+                    $catalog = $planner->flatten($this->gateway->items($source), $allowManualNullStock);
                 }
                 $this->budget->checkpoint();
             } catch (BudgetExceeded $exception) {
@@ -195,6 +198,7 @@ final class SyncService
                     'source_id' => $sourceId,
                     'status' => 'held_empty_catalog',
                     'catalog_total' => 0,
+                    'catalog_unknown' => 0,
                     'message' => '远端商品目录为空，未执行任何商品写入',
                 ];
                 $this->log($result);
@@ -220,7 +224,7 @@ final class SyncService
                     array_keys($targets),
                 );
                 if ($targetHashes !== null && ($plan['fuse'] || $plan['counts'] !== [
-                    'sync' => count($targets), 'import' => 0, 'zero' => 0, 'hold_zero' => 0,
+                    'sync' => count($targets), 'import' => 0, 'zero' => 0, 'hold_zero' => 0, 'held_unknown' => 0,
                 ] || array_column($plan['actions'], 'code') !== array_map('strval', array_keys($targets)))) {
                     throw new RuntimeException('定向计划未完整匹配或触发全货源熔断，本批未执行商品写入');
                 }
@@ -233,16 +237,18 @@ final class SyncService
 
             $result = [
                 'source_id' => $sourceId,
-                'status' => 'ok',
+                'status' => $plan['counts']['held_unknown'] > 0 ? 'partial' : 'ok',
                 'mode' => $options->mode,
                 'dry_run' => $options->dryRun,
                 'catalog_total' => count($catalog),
+                'catalog_unknown' => count(array_filter($catalog, static fn(array $item): bool => $item['stock'] === null)),
                 'local_total' => count($local),
                 'planned' => $plan['counts'],
                 'applied' => [
                     'sync' => 0,
                     'import' => 0,
                     'zero' => 0,
+                    'held_unknown' => 0,
                     'held_race' => 0,
                     'already_managed' => 0,
                     'held_existing_unmanaged' => 0,
@@ -283,7 +289,10 @@ final class SyncService
                 $coverFailed = false;
                 try {
                     $this->budget->checkpoint();
-                    if ($type === 'hold_zero') {
+                    if ($type === 'hold_zero' || $type === 'held_unknown') {
+                        if ($type === 'held_unknown') {
+                            $result['applied']['held_unknown']++;
+                        }
                         if ($lane === 'priority') {
                             $completedPriorityCursor = $code;
                         } else {
@@ -307,14 +316,15 @@ final class SyncService
                         $this->zeroStock($source, $code, $options);
                         $result['applied']['zero']++;
                     } else {
-                        $outcome = $this->syncExisting($source, $code, $remoteItem, $options, $coverFailed, $targets[$code] ?? null);
+                        $outcome = $this->syncExisting($source, $code, $remoteItem, $options, $coverFailed,
+                            $targets[$code] ?? null, $allowManualNullStock);
                         if ($targetHashes !== null && $outcome !== 'synced') {
                             if ($outcome === 'held_race') $result['applied']['held_race']++;
                             throw new RuntimeException('定向商品未完成全部所选字段，本批停止');
                         }
                         if ($targetHashes !== null) $result['verified_code_hashes'][] = substr(hash('sha256', $code), 0, 12);
-                        if ($outcome === 'held_race') {
-                            $result['applied']['held_race']++;
+                        if ($outcome === 'held_race' || $outcome === 'held_unknown') {
+                            $result['applied'][$outcome]++;
                         } elseif ($outcome !== 'skipped_selection' && $outcome !== 'held_selection') {
                             $result['applied'][$type]++;
                         }
@@ -377,7 +387,8 @@ final class SyncService
                 }
             }
 
-            if ($result['failed'] > 0 || $result['applied']['held_existing_unmanaged'] > 0) {
+            if ($result['failed'] > 0 || $result['applied']['held_existing_unmanaged'] > 0
+                || $result['applied']['held_unknown'] > 0) {
                 $result['status'] = 'partial';
             }
             if ($targetHashes !== null) {
@@ -404,6 +415,7 @@ final class SyncService
                 'last_result' => [
                     'status' => $result['status'],
                     'catalog_total' => $result['catalog_total'],
+                    'catalog_unknown' => $result['catalog_unknown'],
                     'planned' => $result['planned'],
                     'applied' => $result['applied'],
                     'failed' => $result['failed'],
@@ -427,7 +439,8 @@ final class SyncService
             $localCodes = $matches($local);
             $remoteCodes = $matches($catalog);
             if (count($localCodes) !== 1 || $localCodes !== $remoteCodes
-                || !$local[$localCodes[0]]['managed'] || (int)$catalog[$localCodes[0]]['stock'] <= 0) {
+                || !$local[$localCodes[0]]['managed'] || $catalog[$localCodes[0]]['stock'] === null
+                || (int)$catalog[$localCodes[0]]['stock'] <= 0) {
                 throw new RuntimeException('定向商品缺失、哈希不唯一、不受管或无库存，本批未执行商品写入');
             }
             $code = $localCodes[0];
@@ -558,6 +571,7 @@ final class SyncService
         Options $options,
         bool &$coverFailed,
         ?array $target = null,
+        bool $allowManualNullStock = false,
     ): string
     {
         $existing = Commodity::query()
@@ -578,6 +592,11 @@ final class SyncService
         }
         $this->sourcePolicy->assertSafe($source);
         $remote = $this->gateway->item($source, $code);
+        // A native manual item may become unknown after the catalog snapshot.
+        // Hold before normalization can fetch a cover or prepare any field update.
+        if ($allowManualNullStock && CatalogPlanner::isManualNullStock($remote)) {
+            return 'held_unknown';
+        }
         $remoteConfigSnapshot = $remote['config'] ?? [];
         $fullConfigValid = is_array($remoteConfigSnapshot) && ConfigSelection::validFullSnapshot($remoteConfigSnapshot);
         $coverLoaded = $options->syncs('cover') && (int)$existing->shared_config_sync === 1;
@@ -787,7 +806,7 @@ final class SyncService
     {
         $rows = [];
         foreach ($catalog as $code => $item) {
-            $rows[] = [$code, (int)$item['stock'], (string)$item['category']];
+            $rows[] = [$code, $item['stock'] === null ? null : (int)$item['stock'], (string)$item['category']];
         }
         return hash('sha256', (string)json_encode($rows, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
     }

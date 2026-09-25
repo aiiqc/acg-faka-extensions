@@ -779,6 +779,134 @@ namespace {
         }
     }
 
+    // Preserve nineteen synthetic unknown identities while ordinary basic work continues.
+    $unknownSource = 7000;
+    $unknownRows = $unknownDetails = $unknownChildren = [];
+    for ($index = 0; $index < 19; $index++) {
+        $code = sprintf('U%02d', $index);
+        $unknownChildren[] = ['code' => $code, 'name' => $code, 'stock' => null, 'delivery_way' => 1];
+        if ($index < 18) $unknownRows[$code] = ['inventory_sync' => $index % 2];
+    }
+    for ($index = 0; $index < 8; $index++) {
+        $code = sprintf('V%02d', $index);
+        $unknownChildren[] = ['code' => $code, 'name' => $code, 'stock' => 7, 'delivery_way' => 1];
+        $unknownRows[$code] = [];
+        $unknownDetails[$code] = ['cover' => '/fixture-cover.png'] + $selectionDetail($code, [], 7);
+    }
+    $unknownTree = [['name' => 'Synthetic manual stock', 'children' => $unknownChildren]];
+    $seedSelectionSource($unknownSource, $unknownRows);
+    $unknownBefore = $sourceRows($unknownSource);
+    $unknownCategories = DB::table('category')->orderBy('id')->get()->toJson();
+    $unknownTotalRows = DB::table('commodity')->count();
+    $unknownOptions = $selectedOptions($unknownSource, Options::SYNC_FIELDS);
+    $unknownImage = static fn(): array => ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage];
+    $unknownRequests = [];
+    $unknownPreview = clone $unknownOptions;
+    $unknownPreview->dryRun = true;
+    $unknownState = (new StateStore())->read($unknownSource);
+    $preview = $observeRun($makeSelectionService($unknownTree, $unknownDetails, $unknownRequests, $unknownImage), $unknownPreview);
+    resumeExpect($preview['result']['status'] === 'partial' && $preview['result']['catalog_unknown'] === 19
+        && $preview['result']['planned']['held_unknown'] === 4 && $preview['result']['applied']['held_unknown'] === 0
+        && $preview['writes'] === 0 && $sourceRows($unknownSource) === $unknownBefore
+        && (new StateStore())->read($unknownSource) === $unknownState,
+        'unknown preview must expose planned protection without advancing or writing');
+    $unknownHeld = $unknownSynced = $unknownDetailCalls = 0;
+    for ($round = 0; $round < 7; $round++) {
+        $unknownOptions->batchLimit = $round === 6 ? 2 : 4;
+        $observed = $observeRun($makeSelectionService($unknownTree, $unknownDetails, $unknownRequests, $unknownImage), $unknownOptions);
+        $unknownHeld += $observed['result']['applied']['held_unknown'];
+        $unknownSynced += $observed['result']['applied']['sync'];
+        $unknownDetailCalls += $unknownRequests['detail'];
+        $expectedStatus = $observed['result']['applied']['held_unknown'] > 0 ? 'partial' : 'ok';
+        resumeExpect($observed['result']['status'] === $expectedStatus && $observed['result']['failed'] === 0
+            && $observed['result']['catalog_total'] === 27 && $observed['result']['catalog_unknown'] === 19
+            && $observed['result']['applied']['zero'] === 0 && $observed['result']['applied']['import'] === 0
+            && $unknownRequests['catalog'] === 1 && $unknownRequests['other'] === 0
+            && $unknownRequests['image'] === ($observed['result']['applied']['sync'] > 0 ? 1 : 0)
+            && $observed['writes'] === $observed['result']['applied']['sync']
+            && array_slice($sourceRows($unknownSource), 0, 18) === array_slice($unknownBefore, 0, 18)
+            && DB::table('commodity')->count() === $unknownTotalRows
+            && DB::table('category')->orderBy('id')->get()->toJson() === $unknownCategories,
+            'unknown native basic batch lost identities, wrote held fields or blocked integer work');
+        $last = (new StateStore())->read($unknownSource)['last_result'];
+        $log = $lastSelectionLog();
+        $loggedApplied = $log['applied'];
+        $resultApplied = $observed['result']['applied'];
+        ksort($loggedApplied);
+        ksort($resultApplied);
+        resumeExpect($last['catalog_unknown'] === 19
+            && $last['applied']['held_unknown'] === $observed['result']['applied']['held_unknown']
+            && $log['catalog_unknown'] === 19 && $loggedApplied === $resultApplied,
+            'unknown counts diverged between actual result, saved state and safe log');
+    }
+    resumeExpect($unknownHeld === 18 && $unknownSynced === 8 && $unknownDetailCalls === 8
+        && (new StateStore())->read($unknownSource)['cursor'] === 'V07',
+        'ordinary cursor must pass held identities and reach all eight valid manual products');
+    $recoveredTree = $unknownTree;
+    $recoveredTree[0]['children'][1]['stock'] = 9;
+    $unknownDetails['U01'] = ['cover' => '/fixture-cover.png'] + $selectionDetail('U01', [], 9);
+    $unknownOptions->batchLimit = 100;
+    $recovered = $observeRun($makeSelectionService($recoveredTree, $unknownDetails, $unknownRequests, $unknownImage), $unknownOptions);
+    $recoveredRow = $sourceRows($unknownSource)[1];
+    resumeExpect($recovered['result']['catalog_unknown'] === 18
+        && $recovered['result']['applied']['held_unknown'] === 17 && $recoveredRow['stock'] === 9
+        && $recoveredRow['name'] === 'Remote fixture U01', 'restored integer stock must naturally resume synchronization');
+
+    // Catalog-to-detail null races must stop before normalizer/image work even when stock sync is off.
+    foreach ([0, 1] as $inventorySync) {
+        $raceSource = 7010 + $inventorySync;
+        $seedSelectionSource($raceSource, ['A' => ['inventory_sync' => $inventorySync]]);
+        $before = $sourceRows($raceSource);
+        $requests = [];
+        $raceDetail = array_replace($selectionDetail('A'), ['stock' => null, 'delivery_way' => 1,
+            'cover' => '/fixture-cover.png']);
+        $race = $observeRun($makeSelectionService($selectionCatalog(['A' => 7]), ['A' => $raceDetail], $requests,
+            imageResponse: static fn(): array => throw new \RuntimeException('unknown detail fetched an image')),
+            $selectedOptions($raceSource, Options::SYNC_FIELDS));
+        resumeExpect($race['result']['status'] === 'partial' && $race['result']['catalog_unknown'] === 0
+            && $race['result']['planned']['held_unknown'] === 0 && $race['result']['applied']['held_unknown'] === 1
+            && $race['result']['applied']['held_race'] === 0 && $race['result']['failed'] === 0
+            && $race['writes'] === 0 && $sourceRows($raceSource) === $before
+            && $requests === ['catalog' => 1, 'detail' => 1, 'other' => 0, 'image' => 0]
+            && (new StateStore())->read($raceSource)['cursor'] === 'A',
+            'detail unknown must hold every field before normalization regardless of inventory selection');
+    }
+
+    // Shared Hub/full/legacy/targeted callers do not opt in to unknown stock.
+    foreach (['full', 'legacy', 'targeted', 'hub'] as $index => $boundary) {
+        $sourceId = 7020 + $index;
+        $sourceType = $boundary === 'legacy' ? 2 : 0;
+        $seedSelectionSource($sourceId, ['A' => []], $sourceType);
+        $tree = [['name' => 'C', 'children' => [
+            ['code' => 'A', 'name' => 'A', 'stock' => null, 'delivery_way' => 1],
+        ]]];
+        $requests = [];
+        $before = $sourceRows($sourceId);
+        $service = $makeSelectionService($tree, [], $requests, sourceType: $sourceType);
+        if ($boundary === 'hub') {
+            $gateway = (new \ReflectionProperty(SyncService::class, 'gateway'))->getValue($service);
+            foreach (['http', 'policy'] as $property) {
+                $field = new \ReflectionProperty(SharedGateway::class, $property);
+                $field->setValue($hubGateway, $field->getValue($gateway));
+            }
+            resumeExpectThrows(static fn() => $hubFetch(\App\Model\Shared::query()->find($sourceId), 'smart'),
+                'Hub must retain the strict native catalog contract');
+        } else {
+            $options = $selectedOptions($sourceId, Options::SYNC_FIELDS, [], [
+                'mode' => $boundary === 'full' ? 'full' : 'basic',
+                'follow_upstream_config' => true, 'follow_upstream_config_source_ids' => (string)$sourceId,
+            ]);
+            $observed = $observeRun($service, $options,
+                $boundary === 'targeted' ? [substr(hash('sha256', 'A'), 0, 12)] : null);
+            resumeExpect($observed['result']['status'] === 'error' && $observed['writes'] === 0,
+                'unknown compatibility escaped its natural basic-sync boundary: ' . $boundary);
+        }
+        resumeExpect($sourceRows($sourceId) === $before
+            && $requests === ['catalog' => 1, 'detail' => 0, 'other' => 0],
+            'strict caller wrote data or fetched a detail for unknown stock');
+    }
+    fwrite(STDOUT, "native manual unknown resume PASS: 19 identities, 8 integer items, dry-run, zero-write holds, recovery, races and strict callers\n");
+
     // Exercise mixed gates with the real save path and a budget interruption in the priority lane.
     $mixedSource = 6200;
     $mixedRows = $mixedStocks = $mixedDetails = [];
@@ -859,7 +987,7 @@ namespace {
     $before = $sourceRows(102);
     $observed = $observeRun($service, $selectedOptions(102, ['name']));
     $result = $observed['result'];
-    resumeExpect($result['status'] === 'ok' && $result['planned'] === ['sync' => 3, 'import' => 0, 'zero' => 0, 'hold_zero' => 0]
+    resumeExpect($result['status'] === 'ok' && $result['planned'] === ['sync' => 3, 'import' => 0, 'zero' => 0, 'hold_zero' => 0, 'held_unknown' => 0]
         && $result['applied']['sync'] === 3 && $result['applied']['zero'] === 0 && $result['applied']['held_race'] === 0
         && $result['mass_zero_fuse'] === false && $result['mass_zero_ratio'] == 0,
         'inventory-disabled shortage used zero/fuse/race handling');
@@ -1778,6 +1906,9 @@ namespace {
     $targetStateBytes = file_get_contents($targetRuntime . '/source-400.json');
     $targetRotationBytes = file_get_contents($targetRuntime . '/rotation.json');
     $targetOrdinaryLog = file_get_contents($targetRuntime . '/sync.log');
+    $targetedLogBefore = is_file($targetRuntime . '/targeted-sync.log')
+        ? file_get_contents($targetRuntime . '/targeted-sync.log') : '';
+    resumeExpect(is_string($targetedLogBefore), 'unable to read preceding targeted history');
     $targetRuns = 0;
     foreach ([false, false, true] as $iteration => $preview) {
         $before = $sourceRows(400);
@@ -1792,7 +1923,7 @@ namespace {
                 'widget' => $changedWidget, 'draft_status' => 1, 'stock' => 19, 'shared_stock' => '[]', 'api_status' => 1]), $before);
         resumeExpect($observed['result']['status'] === 'ok' && ($observed['run']['targeted'] ?? false) === true
             && $observed['result']['verified_code_hashes'] === ($preview ? [] : $targetHashes)
-            && $observed['result']['planned'] === ['sync' => 2, 'import' => 0, 'zero' => 0, 'hold_zero' => 0]
+            && $observed['result']['planned'] === ['sync' => 2, 'import' => 0, 'zero' => 0, 'hold_zero' => 0, 'held_unknown' => 0]
             && $observed['result']['applied']['sync'] === ($preview ? 0 : 2)
             && $observed['writes'] === ($iteration === 0 ? 2 : 0) && $sourceRows(400) === $expected
             && $requests === ['catalog' => 1, 'detail' => $preview ? 0 : 2, 'other' => 0, 'image' => $preview ? 0 : 1]
@@ -1803,8 +1934,12 @@ namespace {
         $targetRuns++;
     }
     $targetOptions->dryRun = false;
-    $targetLog = file($targetRuntime . '/targeted-sync.log', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    resumeExpect(is_array($targetLog) && count($targetLog) === 3
+    $targetedLogAfter = file_get_contents($targetRuntime . '/targeted-sync.log');
+    resumeExpect(is_string($targetedLogAfter) && str_starts_with($targetedLogAfter, $targetedLogBefore)
+        && str_ends_with($targetedLogAfter, "\n"), 'targeted acceptance changed preceding history or left a partial record');
+    $targetLog = explode("\n", substr($targetedLogAfter, strlen($targetedLogBefore)));
+    array_pop($targetLog); // The complete final newline was checked above.
+    resumeExpect(count($targetLog) === 3
         && (fileperms($targetRuntime . '/targeted-sync.log') & 0777) === 0600,
         'targeted acceptance must use the existing private bounded logger independently of ordinary history');
     foreach ($targetLog as $line) {

@@ -2,9 +2,9 @@
 
 本教程面向已经会部署基础 PHP 网站、可以使用 root 或 sudo 的 Acg-Faka 站长。Acg-Faka Extensions 当前提供 Pika 开发套装：在一套干净的官方异次元上，通过一条服务器安装命令加入「本地扩展」后台、三个固定扩展、Pika 主题和 `PikaBEpusdtAdapter` 原生支付适配器。
 
-本教程属于 `v0.1.0-preview.1` 首次预发布的提交前截点，套装版本仍为 `0.1.0-dev`，不是稳定版。公开源码为 [aiiqc/acg-faka-extensions](https://github.com/aiiqc/acg-faka-extensions)；准确 commit、下载附件和 SHA256 以[预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.1)实际内容为准。第 3 节缺少已核下载参数时会停止；不要把源码或预览版当作生产许可。媒体原样保留但再分发权利仍 UNKNOWN，私密安全报告已启用，见[项目状态](PROJECT_STATUS.md)和[安全说明](../SECURITY.md)。
+当前 main 源码含 SupplySync `1.1.18`，套装仍为 `0.1.0-dev`，不是稳定版。本批不新增 tag／Release，旧 `v0.1.0-preview.1` 固定附件不含本次修复。公开源码为 [aiiqc/acg-faka-extensions](https://github.com/aiiqc/acg-faka-extensions)；已有下载附件及 SHA256 以[预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.1)实际内容为准，不把 main 自动源码包当成已验证新发行包。第 3 节缺少已核参数时会停止；源码或预览版不是生产许可。媒体权利与安全边界继续见[项目状态](PROJECT_STATUS.md)和[安全说明](../SECURITY.md)。
 
-本教程对应 PikaCatalogHub `0.6.9`／PikaSupplySync `1.1.17`、主题 `1.1.6`、支付适配器 `0.1.2`。同一安装输入已通过固定官方 `3.7.9` 禁网安装、核验与配对文件恢复；最终下载制品身份、目标站部署和真实交易仍须分别验收，不能沿用旧版或其他站点结论。BEpusdt 后端单独部署，不包含在扩展安装器内。本文路径、账号和站点命名均为通用示例，不包含实际凭据。第一次使用先读[新手操作路径](USER_GUIDE.md)，再按本教程执行安装、预检和恢复。
+当前源码对应 PikaCatalogHub `0.6.9`／PikaSupplySync `1.1.18`、主题 `1.1.7`、支付适配器 `0.1.2`。原生 basic 手动空库存保护及状态回退限制见[货源同步说明](../extensions/PikaSupplySync/Wiki/README.md#手动商品库存未知保护)。最终制品、目标站部署和真实交易仍须分别验收，不能沿用旧版或其他站点结论。BEpusdt 后端单独部署，不包含在扩展安装器内。本文路径、账号和站点命名均为通用示例，不包含实际凭据。第一次使用先读[新手操作路径](USER_GUIDE.md)，再按本教程执行安装、预检和恢复。
 
 ## 1. 安装前先确认边界
 

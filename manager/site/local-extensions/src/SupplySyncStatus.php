@@ -131,13 +131,24 @@ final class SupplySyncStatus
             if ($value !== null && (!is_int($value) || $value < 0 || $value > 10000)) return null;
             $counts[$key] = $value;
         }
+        $unknown = [
+            'catalog_unknown' => array_key_exists('catalog_unknown', $entry) ? $entry['catalog_unknown'] : 0,
+            'planned_held_unknown' => is_array($entry['planned'] ?? null) && array_key_exists('held_unknown', $entry['planned'])
+                ? $entry['planned']['held_unknown'] : 0,
+            'applied_held_unknown' => is_array($entry['applied'] ?? null) && array_key_exists('held_unknown', $entry['applied'])
+                ? $entry['applied']['held_unknown'] : 0,
+        ];
+        foreach ($unknown as $value) {
+            if (!is_int($value) || $value < 0 || $value > 10000) return null;
+        }
+        $counts['held_unknown'] = $unknown['applied_held_unknown'];
         $failed = $entry['failed'] ?? null;
         if ($failed !== null && (!is_int($failed) || $failed < 0 || $failed > 10000)) return null;
         $held = $entry['selection_held'] ?? null;
         if ($held !== null && (!is_int($held) || $held < 0 || $held > 10000)) return null;
         $planned = null;
         if (is_array($entry['planned'] ?? null)) {
-            $planned = 0;
+            $planned = $unknown['planned_held_unknown'];
             foreach (['sync', 'import', 'zero', 'hold_zero'] as $key) {
                 $count = $entry['planned'][$key] ?? null;
                 if (!is_int($count) || $count < 0 || $count > 10000) return null;
@@ -148,6 +159,8 @@ final class SupplySyncStatus
             'recorded_at' => $time, 'timezone' => $zone, 'origin' => $origin,
             'mode' => in_array($entry['mode'] ?? null, ['basic', 'full'], true) ? $entry['mode'] : null,
             'status' => $entry['status'], 'planned' => $planned, 'applied' => $counts,
+            'catalog_unknown' => $unknown['catalog_unknown'],
+            'planned_held_unknown' => $unknown['planned_held_unknown'],
             'failed' => $failed, 'selection_held' => $held,
             'catalog_diagnostic' => $entry['status'] === 'error'
                 ? self::catalogDiagnostic($entry['catalog_diagnostic'] ?? null) : null,

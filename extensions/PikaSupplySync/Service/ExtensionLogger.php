@@ -66,13 +66,13 @@ final class ExtensionLogger
         foreach (['dry_run', 'targeted', 'selection_empty', 'mass_zero_fuse'] as $key) {
             if (is_bool($result[$key] ?? null)) $safe[$key] = $result[$key];
         }
-        foreach (['source_id' => 4294967295, 'catalog_total' => 10000, 'local_total' => 10000,
+        foreach (['source_id' => 4294967295, 'catalog_total' => 10000, 'catalog_unknown' => 10000, 'local_total' => 10000,
             'failed' => 10000, 'cover_failed' => 10000, 'selection_held' => 10000] as $key => $max) {
             $value = $result[$key] ?? null;
             if (is_int($value) && $value >= ($key === 'source_id' ? 1 : 0) && $value <= $max) $safe[$key] = $value;
         }
-        foreach (['planned' => ['sync', 'import', 'zero', 'hold_zero'],
-            'applied' => ['sync', 'import', 'zero', 'held_race', 'already_managed', 'held_existing_unmanaged']] as $key => $keys) {
+        foreach (['planned' => ['sync', 'import', 'zero', 'hold_zero', 'held_unknown'],
+            'applied' => ['sync', 'import', 'zero', 'held_race', 'already_managed', 'held_existing_unmanaged', 'held_unknown']] as $key => $keys) {
             if (!is_array($result[$key] ?? null)) continue;
             $safe[$key] = [];
             foreach ($keys as $field) {
