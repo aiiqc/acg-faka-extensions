@@ -18,7 +18,7 @@ Acg-Faka Extensions 是面向官方 Acg-Faka 的非官方社区扩展与主题�
 
 安装完成后，三个扩展会出现在异次元后台左侧的「本地扩展」页面，支付适配器会出现在异次元原生「支付管理」中；它不会出现在异次元应用商店。服务器安装器不会替用户自动启用扩展、支付方式或切换主题。
 
-> 当前 main 源码为 Pika 主题 `1.1.7`，修复完整店名显示并增加公告外链教程。套装仍为 `0.1.0-dev`，SupplySync `1.1.17`、CatalogHub `0.6.9`、OrderReturnWait `1.1.0` 和支付适配器 `0.1.2` 保持。本批没有新增 tag／Release：**旧 `v0.1.0-preview.1` 的固定下载附件仍为主题 1.1.6，不包含本次修复。** 既有固定包身份以[预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.1)为准；不要把 main 或自动生成的 Source code 包当成已验收的新发行包。源码、合成截图与目标站部署／交易验收分开；第三方二进制媒体再分发权利仍未确认。
+> 当前 main 源码包含 SupplySync `1.1.18` 的手动商品库存未知保护；Pika 主题保持 `1.1.7`，包含完整店名显示修复与公告外链教程。套装 `0.1.0-dev`、CatalogHub `0.6.9`、OrderReturnWait `1.1.0` 和支付适配器 `0.1.2` 保持不变。本批没有新增 tag／Release：**旧 `v0.1.0-preview.1` 的固定下载附件仍为主题 1.1.6，不包含上述主题与库存保护更新。** 既有固定包身份以[预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.1)为准；不要把 main 或自动生成的 Source code 包当成已验收的新发行包。源码、合成截图与目标站部署／交易验收分开；第三方二进制媒体再分发权利仍未确认。
 
 公开源码：[aiiqc/acg-faka-extensions](https://github.com/aiiqc/acg-faka-extensions)。私密漏洞报告已启用，入口及脱敏要求见[安全说明](SECURITY.md)；完整证据边界见[项目状态](docs/PROJECT_STATUS.md)。
 
