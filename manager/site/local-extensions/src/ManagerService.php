@@ -10,7 +10,18 @@ final class ManagerService
     {
         $list = [];
         foreach (Registry::extensions() as $extension) {
-            $config = ConfigStore::publicView($extension['id']);
+            $configError = false;
+            try {
+                $config = ConfigStore::publicView($extension['id']);
+            } catch (\Throwable $exception) {
+                if ($extension['id'] !== SharedAccessGuard::ID) {
+                    throw $exception;
+                }
+                // A damaged admission policy must not hide the administrator's
+                // existing disable control or the other extension cards.
+                $config = ['values' => [], 'password_configured' => []];
+                $configError = true;
+            }
             $list[] = [
                 'id' => $extension['id'],
                 'name' => $extension['name'],
@@ -20,6 +31,7 @@ final class ManagerService
                 'settings' => $extension['settings'],
                 'values' => $config['values'],
                 'password_configured' => $config['password_configured'],
+                ...($configError ? ['config_error' => true] : []),
                 ...($extension['id'] === 'PikaSupplySync' ? ['sync_status' => SupplySyncStatus::snapshot()] : []),
             ];
         }

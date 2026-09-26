@@ -4,6 +4,7 @@
   "extensions": [
     "PikaSupplySync",
     "PikaCatalogHub",
+    "PikaSharedAccess",
     "PikaOrderReturnWait"
   ],
   "themes": [

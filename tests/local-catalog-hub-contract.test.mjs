@@ -214,7 +214,7 @@ test('retrying unimported items reuses the guarded task control without acceptin
 
 test('release payload registers CatalogHub without changing the official bridge boundary', () => {
     const release = JSON.parse(fs.readFileSync(path.join(root, 'release.json'), 'utf8'));
-    assert.deepEqual(release.extensions, ['PikaSupplySync', 'PikaCatalogHub', 'PikaOrderReturnWait']);
+    assert.deepEqual(release.extensions, ['PikaSupplySync', 'PikaCatalogHub', 'PikaSharedAccess', 'PikaOrderReturnWait']);
     const bridge = fs.readFileSync(path.join(root, 'bridge/3.6.4/local-extensions.patch'), 'utf8');
     assert.doesNotMatch(bridge, /PikaCatalogHub/);
 });

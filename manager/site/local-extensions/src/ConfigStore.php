@@ -78,6 +78,9 @@ final class ConfigStore
                     }
                 }
             }
+            if ($id === 'PikaSharedAccess') {
+                SharedAccessGuard::validateSettings($next);
+            }
             return ['schema' => 1, 'values' => $next];
         });
     }

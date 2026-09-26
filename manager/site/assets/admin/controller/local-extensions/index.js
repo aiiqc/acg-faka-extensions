@@ -98,6 +98,9 @@
 
     const settingsForm = extension => {
         const form = node('form', 'local-extension-settings mt-4');
+        if (extension.id === 'PikaSharedAccess') {
+            form.append(node('p', 'text-muted mb-0', '先保存名单再启动。每项填写本站商户账号ID@对应服务器出口IP，使用英文逗号分隔；同账号多个出口分别填写配对。不支持域名、端口、CIDR或通配符，空名单启用后拒绝全部共享接入。只检查服务器确认的来源地址，不读取客户端转发头；代理来源须由站点管理员正确配置。'));
+        }
         if (extension.id === 'PikaSupplySync') {
             form.append(node('p', legacySelection(extension) ? 'alert alert-warning mb-0' : 'text-muted mb-0',
                 legacySelection(extension)
@@ -357,6 +360,7 @@
                 extension.enabled ? '停止' : '启动'
             );
             toggle.type = 'button';
+            toggle.disabled = extension.config_error === true && !extension.enabled;
             toggle.addEventListener('click', async () => {
                 toggle.disabled = true;
                 try {
@@ -373,7 +377,9 @@
             });
             top.append(heading, toggle);
             card.append(top, node('p', 'local-extension-card__description mt-4 mb-0', extension.description || ''));
-            if ((extension.settings || []).length > 0) card.append(settingsForm(extension));
+            if (extension.config_error === true) {
+                card.append(node('p', 'alert alert-danger mt-4 mb-0', '准入配置无法读取；启用时共享接入保持拒绝。可先停止本扩展，再由管理员修复站外配置。未读取到的配置不会作为空表单覆盖保存。'));
+            } else if ((extension.settings || []).length > 0) card.append(settingsForm(extension));
             if (extension.id === 'PikaSupplySync') card.append(syncStatusCard(extension.sync_status));
             column.append(card);
             grid.append(column);

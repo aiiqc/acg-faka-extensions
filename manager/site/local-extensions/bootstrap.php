@@ -19,6 +19,7 @@ foreach ([
     'ManagerService.php',
     'Dispatcher.php',
     'NativeCategoryGuard.php',
+    'SharedAccessGuard.php',
     'Runtime.php',
 ] as $managerFile) {
     require_once $managerRoot . '/' . $managerFile;

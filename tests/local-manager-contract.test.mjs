@@ -290,7 +290,7 @@ test('admin UI renders manifest data as text and offers no installer input', asy
     assert.doesNotMatch(js, /innerHTML|eval\s*\(|new Function/);
     assert.doesNotMatch(js, /type\s*=\s*['"]file|https?:\/\/|\.zip|systemd|systemctl/i);
     assert.match(html, /不提供在线安装、URL、ZIP 或系统服务操作/);
-    assert.match(html, /ready\("\/assets\/admin\/controller\/local-extensions\/index\.js\?rev=20260925-supply120"\)/);
+    assert.match(html, /ready\("\/assets\/admin\/controller\/local-extensions\/index\.js\?rev=20260926-shared-access"\)/);
 });
 
 test('catalog hub is an owner-only queued workflow without install or system-service controls', async () => {

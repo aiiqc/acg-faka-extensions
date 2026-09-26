@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "PikaSharedAccess",
+  "name": "店铺共享准入",
+  "version": "0.1.0",
+  "description": "默认关闭。启用后仅允许已签名账号与对应服务器 IP 成对匹配的原生共享请求；先保存名单再启用，空名单拒绝全部共享接入。不影响普通页面、后台登录或支付回调。",
+  "type": "plugin",
+  "namespace": "Pika\\LocalExtensions\\PikaSharedAccess\\",
+  "bootstrap": "bootstrap.php",
+  "hooks": [],
+  "settings": [
+    {
+      "key": "allowed_clients",
+      "label": "允许的账号ID@IP（英文逗号分隔，最多100对）",
+      "type": "text",
+      "default": "",
+      "min": 0,
+      "max": 4096
+    }
+  ],
+  "assets": []
+}

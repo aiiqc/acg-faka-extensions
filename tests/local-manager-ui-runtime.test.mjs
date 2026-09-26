@@ -239,3 +239,58 @@ test('manager UI preserves error, all-disabled and preview outcomes with field o
   assert.match(preview, /最近只读预演记录（不写商品）：批次完成/);
   assert.match(preview, /媒体已复查 0／2；已刷新 0；失败 0；未完成 2/);
 });
+
+test('damaged shared access policy retains disable control without an empty save form', { timeout: 1000 }, async () => {
+  let enabled = true;
+  const calls = [];
+  let resolveRender;
+  let rejectRender;
+  const rendered = new Promise((resolve, reject) => { resolveRender = resolve; rejectRender = reject; });
+  const element = tag => ({
+    tag, dataset: {}, children: [], listeners: {}, textContent: '',
+    append(...children) { this.children.push(...children); },
+    setAttribute() {},
+    addEventListener(name, callback) { this.listeners[name] = callback; },
+  });
+  const rootElement = element('root');
+  rootElement.dataset.csrf = 'synthetic-csrf';
+  rootElement.replaceChildren = (...children) => { rootElement.children = children; resolveRender(); };
+  const walk = current => [current, ...current.children.flatMap(walk)];
+  vm.runInNewContext(source, {
+    URLSearchParams,
+    fetch: async (url, options) => {
+      const data = new URLSearchParams(options.body);
+      calls.push({ url, data });
+      if (url.endsWith('/setStatus')) enabled = data.get('enabled') === '1';
+      return {
+        ok: true, headers: { get: () => 'application/json' },
+        json: async () => ({ code: 200, data: { list: [
+          { id: 'PikaSharedAccess', name: '店铺共享准入', version: '0.1.0', enabled,
+            config_error: true, values: { allowed_clients: 'private-sentinel' },
+            settings: [{ key: 'allowed_clients', type: 'text', label: '允许名单' }] },
+          { id: 'OtherExtension', name: '其他扩展', version: 'fixture', enabled: false },
+        ] } }),
+      };
+    },
+    document: { getElementById: () => rootElement, createElement: element },
+    window: { message: { error: value => rejectRender(new Error(String(value))) } },
+    $: () => ({ one() {} }),
+  }, { filename: 'local-extensions/index.js' });
+  await rendered;
+  const first = walk(rootElement);
+  assert.equal(first.some(node => node.tag === 'form'), false);
+  assert.match(first.map(node => node.textContent).join('\n'), /准入配置无法读取/);
+  assert.match(first.map(node => node.textContent).join('\n'), /其他扩展/);
+  assert.doesNotMatch(first.map(node => node.textContent).join('\n'), /private-sentinel/);
+  const stop = first.find(node => node.tag === 'button' && node.textContent === '停止');
+  assert.equal(stop.disabled, false);
+  await stop.listeners.click();
+  const mutation = calls.filter(call => !call.url.endsWith('/listing'));
+  assert.equal(mutation.length, 1);
+  assert.equal(mutation[0].url, '/admin/api/localExtensions/setStatus');
+  assert.equal(mutation[0].data.get('id'), 'PikaSharedAccess');
+  assert.equal(mutation[0].data.get('enabled'), '0');
+  const buttons = walk(rootElement).filter(node => node.tag === 'button');
+  assert.equal(buttons[0].disabled, true, 'damaged policy must not offer a fresh enable action');
+  assert.equal(buttons[1].disabled, false, 'other extensions must remain accessible');
+});

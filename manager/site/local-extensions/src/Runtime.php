@@ -24,6 +24,7 @@ final class Runtime
         // bool/Stock early. An exception already prevents the controller call.
         if ($point === 0x31) {
             NativeCategoryGuard::before($args[0] ?? null, $args[1] ?? null);
+            SharedAccessGuard::before($args[0] ?? null, $args[1] ?? null);
         }
         return $result;
     }

@@ -322,9 +322,9 @@ test('versioned bridge patches stay within their exact upstream boundaries', () 
   );
 });
 
-test('release contains the manager, three local extensions, one theme and one exact payment adapter', () => {
+test('release contains the manager, four local extensions, one theme and one exact payment adapter', () => {
   const release = JSON.parse(read('release.json'));
-  assert.deepEqual(release.extensions, ['PikaSupplySync', 'PikaCatalogHub', 'PikaOrderReturnWait']);
+  assert.deepEqual(release.extensions, ['PikaSupplySync', 'PikaCatalogHub', 'PikaSharedAccess', 'PikaOrderReturnWait']);
   assert.deepEqual(release.themes, ['Pika']);
   assert.deepEqual(release.payment_adapters, ['PikaBEpusdtAdapter']);
   for (const id of release.extensions) {
