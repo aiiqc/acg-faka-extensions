@@ -15,6 +15,7 @@ final class ExtensionLogger
         '单货源预算已耗尽', '本轮预算已耗尽', '远端返回业务失败', '远端凭据验证失败',
         '远端商品不可用', '远端商品详情无效', '远端 HTTPS 请求失败', '同步失败，原因未分类',
         '货源同步失败，未执行商品写入',
+        '目录巡检未完成：已提交的详情更新保留，未确认商品不清零或恢复',
     ];
 
     public function write(array $result): void
@@ -90,10 +91,11 @@ final class ExtensionLogger
         $safe = [];
         foreach (['status' => ['ok', 'partial', 'error', 'locked', 'held_empty_catalog'],
             'mode' => ['basic', 'full'], 'budget_scope' => ['source', 'round'],
-            'phase' => ['preflight', 'catalog', 'planning', 'actions']] as $key => $allowed) {
+            'phase' => ['preflight', 'catalog', 'planning', 'actions'],
+            'catalog_status' => ['fresh', 'stale', 'inspected', 'failed']] as $key => $allowed) {
             if (in_array($result[$key] ?? null, $allowed, true)) $safe[$key] = $result[$key];
         }
-        foreach (['dry_run', 'targeted', 'selection_empty', 'mass_zero_fuse'] as $key) {
+        foreach (['dry_run', 'targeted', 'selection_empty', 'mass_zero_fuse', 'detail_first'] as $key) {
             if (is_bool($result[$key] ?? null)) $safe[$key] = $result[$key];
         }
         foreach (['source_id' => 4294967295, 'catalog_total' => 10000, 'catalog_unknown' => 10000, 'local_total' => 10000,

@@ -88,7 +88,10 @@ test('limits the independent media pass to the scheduled basic path and existing
     assert.match(planner, /\$options->mode === Options::MODE_BASIC && \$targetCodes === \[\] && \$schedule !== null/);
     assert.match(planner, /OPPORTUNITIES = \['priority', 'priority', 'priority', 'normal', 'media'\]/);
     assert.match(scheduled, /\$this->actionType\(/);
-    assert.match(scheduled, /\$type === 'sync' && \$options->syncs\('cover'\) && \(int\)\(\$row\['shared_config_sync'\] \?\? 0\) === 1/);
+    assert.match(scheduled, /\$type === 'sync' && \(int\)\(\$row\['shared_config_sync'\] \?\? 0\) === 1/);
+    assert.match(scheduled, /\$options->syncs\('cover'\) \|\| \(\$detailFirst && \(\$options->syncs\('name'\) \|\| \$options->syncs\('description'\)\)\)/);
+    assert.match(scheduled, /\$detailFirst && \$lane !== 'media'/);
+    assert.match(scheduled, /\$lane = \$lane === 'priority' \? 'normal' : 'priority'/);
     assert.match(scheduled, /\$options->batchLimit > 3 \? array_fill_keys\(\$priority, true\) : \[\]/);
     assert.match(scheduled, /while \(count\(\$actions\) < \$options->batchLimit\)/);
     assert.match(scheduled, /\$skipped < count\(self::OPPORTUNITIES\)/);

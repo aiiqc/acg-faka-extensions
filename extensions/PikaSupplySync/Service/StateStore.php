@@ -11,7 +11,7 @@ final class StateStore
     private const MAX_STATE_BYTES = 1048576;
     private const MAX_CATEGORIES = 201;
     private const MAX_ROTATION_BYTES = 128;
-    private const MAX_SCHEDULE_BYTES = 1024;
+    private const MAX_CONTROL_BYTES = 1024;
 
     /** @param int[] $sourceIds @return int[] */
     public function orderSources(array $sourceIds): array
@@ -209,18 +209,18 @@ final class StateStore
         if (!file_exists($path) && !is_link($path)) {
             return $this->scheduleDefaults($basisHash);
         }
-        $this->assertScheduleFile($path);
+        $this->assertControlFile($path);
         $handle = fopen($path, 'rb');
         if ($handle === false) {
             throw new RuntimeException('无法读取插件调度状态');
         }
         try {
-            $this->assertScheduleHandle($handle, $path);
-            $raw = stream_get_contents($handle, self::MAX_SCHEDULE_BYTES + 1);
+            $this->assertControlHandle($handle, $path);
+            $raw = stream_get_contents($handle, self::MAX_CONTROL_BYTES + 1);
         } finally {
             fclose($handle);
         }
-        if (!is_string($raw) || strlen($raw) > self::MAX_SCHEDULE_BYTES) {
+        if (!is_string($raw) || strlen($raw) > self::MAX_CONTROL_BYTES) {
             throw new RuntimeException('插件调度状态大小不正确');
         }
         try {
@@ -243,6 +243,88 @@ final class StateStore
         // A caller may pass its old read basis; only the already-written legacy state binds the new one.
         $schedule['basis_hash'] = $this->scheduleBasis($legacyState, $sourceFingerprint);
         $this->persistSchedule($sourceId, $schedule);
+    }
+
+    /** @return array{schema:int,source_fingerprint:string,last_attempt_at:int,last_success_at:int,cursor:string} */
+    public function readCatalogControl(int $sourceId, string $sourceFingerprint): array
+    {
+        if (preg_match('/^[a-f0-9]{64}$/D', $sourceFingerprint) !== 1) {
+            throw new RuntimeException('插件货源指纹格式不正确');
+        }
+        $path = $this->catalogControlPath($sourceId);
+        clearstatcache(true, $path);
+        if (!file_exists($path) && !is_link($path)) {
+            return $this->catalogControlDefaults($sourceFingerprint);
+        }
+        $this->assertControlFile($path);
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            throw new RuntimeException('无法读取插件目录巡检状态');
+        }
+        try {
+            $this->assertControlHandle($handle, $path);
+            $raw = stream_get_contents($handle, self::MAX_CONTROL_BYTES + 1);
+        } finally {
+            fclose($handle);
+        }
+        if (!is_string($raw) || strlen($raw) > self::MAX_CONTROL_BYTES) {
+            throw new RuntimeException('插件目录巡检状态大小不正确');
+        }
+        try {
+            $control = $this->normalizeCatalogControl(json_decode($raw, true, 4, JSON_THROW_ON_ERROR));
+        } catch (\JsonException) {
+            throw new RuntimeException('插件目录巡检状态格式损坏');
+        }
+        return hash_equals($sourceFingerprint, $control['source_fingerprint'])
+            ? $control
+            : $this->catalogControlDefaults($sourceFingerprint);
+    }
+
+    public function writeCatalogControl(int $sourceId, array $control): void
+    {
+        $control = $this->normalizeCatalogControl($control);
+        $this->persistControl($this->catalogControlPath($sourceId), $control);
+    }
+
+    private function normalizeCatalogControl(mixed $control): array
+    {
+        if (!is_array($control)) {
+            throw new RuntimeException('插件目录巡检状态必须是对象');
+        }
+        $this->assertKeys($control, ['schema', 'source_fingerprint', 'last_attempt_at', 'last_success_at', 'cursor']);
+        if ($control['schema'] !== 1
+            || !is_string($control['source_fingerprint'])
+            || preg_match('/^[a-f0-9]{64}$/D', $control['source_fingerprint']) !== 1
+            || !is_int($control['last_attempt_at']) || $control['last_attempt_at'] < 0
+            || !is_int($control['last_success_at']) || $control['last_success_at'] < 0
+            || $control['last_success_at'] > $control['last_attempt_at']
+            || !is_string($control['cursor']) || strlen($control['cursor']) > 64
+            || preg_match('/[\x00-\x20\x7F]/', $control['cursor'])) {
+            throw new RuntimeException('插件目录巡检状态字段不正确');
+        }
+        return [
+            'schema' => 1,
+            'source_fingerprint' => $control['source_fingerprint'],
+            'last_attempt_at' => $control['last_attempt_at'],
+            'last_success_at' => $control['last_success_at'],
+            'cursor' => $control['cursor'],
+        ];
+    }
+
+    private function catalogControlDefaults(string $sourceFingerprint): array
+    {
+        return [
+            'schema' => 1,
+            'source_fingerprint' => $sourceFingerprint,
+            'last_attempt_at' => 0,
+            'last_success_at' => 0,
+            'cursor' => '',
+        ];
+    }
+
+    private function catalogControlPath(int $sourceId): string
+    {
+        return dirname($this->path($sourceId)) . '/source-' . $sourceId . '.catalog.json';
     }
 
     private function scheduleBasis(array $legacyState, string $sourceFingerprint): string
@@ -294,20 +376,25 @@ final class StateStore
 
     private function persistSchedule(int $sourceId, array $schedule): void
     {
-        $path = $this->schedulePath($sourceId);
-        $json = json_encode($schedule, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
+        $this->persistControl($this->schedulePath($sourceId), $schedule);
+    }
+
+    private function persistControl(string $path, array $control): void
+    {
+        $json = json_encode($control, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
             . PHP_EOL;
-        if (strlen($json) > self::MAX_SCHEDULE_BYTES) {
-            throw new RuntimeException('插件调度状态超过大小上限');
+        if (strlen($json) > self::MAX_CONTROL_BYTES) {
+            throw new RuntimeException('插件控制状态超过大小上限');
         }
         if (file_exists($path) || is_link($path)) {
-            $this->assertScheduleFile($path);
+            $this->assertControlFile($path);
         }
-        $lockPath = dirname($path) . '/schedule-' . $sourceId . '.state.lock';
+        $name = basename($path, '.json');
+        $lockPath = dirname($path) . '/' . $name . '.state.lock';
         clearstatcache(true, $lockPath);
         $exists = file_exists($lockPath) || is_link($lockPath);
         if ($exists) {
-            $this->assertScheduleFile($lockPath);
+            $this->assertControlFile($lockPath);
         }
         $previousUmask = umask(0177);
         try {
@@ -316,46 +403,46 @@ final class StateStore
             umask($previousUmask);
         }
         if ($handle === false) {
-            throw new RuntimeException('无法创建插件调度状态锁');
+            throw new RuntimeException('无法创建插件控制状态锁');
         }
         $temporary = false;
         try {
-            $this->assertScheduleHandle($handle, $lockPath);
+            $this->assertControlHandle($handle, $lockPath);
             if (!flock($handle, LOCK_EX)) {
-                throw new RuntimeException('无法锁定插件调度状态');
+                throw new RuntimeException('无法锁定插件控制状态');
             }
-            $this->assertScheduleHandle($handle, $lockPath);
+            $this->assertControlHandle($handle, $lockPath);
             if (file_exists($path) || is_link($path)) {
-                $this->assertScheduleFile($path);
+                $this->assertControlFile($path);
             }
-            $temporary = tempnam(dirname($path), '.schedule-' . $sourceId . '-');
+            $temporary = tempnam(dirname($path), '.' . $name . '-');
             if ($temporary === false || is_link($temporary) || !chmod($temporary, 0600)) {
-                throw new RuntimeException('无法创建插件调度临时文件');
+                throw new RuntimeException('无法创建插件控制临时文件');
             }
             $tempHandle = fopen($temporary, 'wb');
             if ($tempHandle === false) {
-                throw new RuntimeException('插件调度状态写入失败');
+                throw new RuntimeException('插件控制状态写入失败');
             }
             try {
-                $this->assertScheduleHandle($tempHandle, $temporary);
+                $this->assertControlHandle($tempHandle, $temporary);
                 $written = 0;
                 while ($written < strlen($json)) {
                     $bytes = fwrite($tempHandle, substr($json, $written));
                     if ($bytes === false || $bytes === 0) {
-                        throw new RuntimeException('插件调度状态写入失败');
+                        throw new RuntimeException('插件控制状态写入失败');
                     }
                     $written += $bytes;
                 }
                 if (!fflush($tempHandle) || (function_exists('fsync') && !fsync($tempHandle))) {
-                    throw new RuntimeException('插件调度状态刷盘失败');
+                    throw new RuntimeException('插件控制状态刷盘失败');
                 }
             } finally {
                 fclose($tempHandle);
             }
             if (!rename($temporary, $path)) {
-                throw new RuntimeException('插件调度状态原子替换失败');
+                throw new RuntimeException('插件控制状态原子替换失败');
             }
-            $this->assertScheduleFile($path);
+            $this->assertControlFile($path);
         } finally {
             flock($handle, LOCK_UN);
             fclose($handle);
@@ -365,7 +452,7 @@ final class StateStore
         }
     }
 
-    private function assertScheduleFile(string $path): array
+    private function assertControlFile(string $path): array
     {
         clearstatcache(true, $path);
         $metadata = lstat($path);
@@ -374,21 +461,21 @@ final class StateStore
             || ((int)$metadata['mode'] & 0777) !== 0600
             || (int)$metadata['uid'] !== PathGuard::runtimeOwner()
             || (int)$metadata['nlink'] !== 1
-            || (int)$metadata['size'] > self::MAX_SCHEDULE_BYTES) {
-            throw new RuntimeException('插件调度状态的大小、类型、权限或文件身份不安全');
+            || (int)$metadata['size'] > self::MAX_CONTROL_BYTES) {
+            throw new RuntimeException('插件控制状态的大小、类型、权限或文件身份不安全');
         }
         return $metadata;
     }
 
     /** @param resource $handle */
-    private function assertScheduleHandle($handle, string $path): void
+    private function assertControlHandle($handle, string $path): void
     {
-        $pathMetadata = $this->assertScheduleFile($path);
+        $pathMetadata = $this->assertControlFile($path);
         $metadata = fstat($handle);
         if (!is_array($metadata)
             || (int)$metadata['dev'] !== (int)$pathMetadata['dev']
             || (int)$metadata['ino'] !== (int)$pathMetadata['ino']) {
-            throw new RuntimeException('插件调度状态文件身份已改变');
+            throw new RuntimeException('插件控制状态文件身份已改变');
         }
     }
 

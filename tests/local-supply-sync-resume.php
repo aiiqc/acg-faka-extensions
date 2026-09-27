@@ -3013,12 +3013,377 @@ namespace {
         && DB::table('category')->orderBy('id')->get()->toJson() === $categoriesBefore,
         'basic compact routing mutated category map, jobs or category rows');
 
+    // Detail-first is explicitly enabled only by synthetic saved policy values.
+    // These native/type-two fixtures prove local contracts, not a real supplier's response shape.
+    $detailFirstRuns = 0;
+    $detailFirstOptions = static function (int $sourceId, array $fields, array $saved = []) use ($selectedOptions): Options {
+        return $selectedOptions($sourceId, $fields, [], $saved + [
+            'catalog_interval_seconds' => 60, 'catalog_max_age_seconds' => 600,
+        ]);
+    };
+    $detailFirstDetail = static fn(string $code, int $stock = 9): array =>
+        ['draft_premium' => '2.00', 'draft_status' => 1] + $selectionDetail($code, [], $stock);
+    $detailFirstControl = static function (int $sourceId, int $attempt, int $success, string $cursor = ''): array {
+        $control = ['schema' => 1, 'source_fingerprint' => SourceIdentity::fingerprint(
+            \App\Model\Shared::query()->findOrFail($sourceId)), 'last_attempt_at' => $attempt,
+            'last_success_at' => $success, 'cursor' => $cursor];
+        (new StateStore())->writeCatalogControl($sourceId, $control);
+        return $control;
+    };
+    $readDetailFirstControl = static fn(int $sourceId): array => (new StateStore())->readCatalogControl($sourceId,
+        SourceIdentity::fingerprint(\App\Model\Shared::query()->findOrFail($sourceId)));
+    $forbidDetailFirstCatalog = static function (): never {
+        throw new \RuntimeException('fresh detail-first fixture must not request the catalog');
+    };
+
+    // Trade/content groups share a single detail response but each writes once.
+    // Text remains selected and advances even when cover is disabled.
+    foreach (['0.10' => 44.0, '0.20' => 48.0] as $premium => $expectedPrice) {
+        $sourceId = $premium === '0.10' ? 19001 : 19002;
+        $seedSelectionSource($sourceId, ['A' => ['api_status' => 1, 'shared_premium' => $premium]]);
+        $now = time();
+        $control = $detailFirstControl($sourceId, $now, $now);
+        $requests = [];
+        $observed = $observeRun($makeSelectionService([], ['A' => $detailFirstDetail('A')], $requests,
+            catalogReply: $forbidDetailFirstCatalog), $detailFirstOptions($sourceId,
+                ['name', 'description', 'price', 'inventory', 'options']));
+        $row = $sourceRows($sourceId)[0];
+        resumeExpect($observed['result']['status'] === 'ok' && $observed['writes'] === 2
+            && $requests === ['catalog' => 0, 'detail' => 1, 'other' => 0]
+            && (float)$row['price'] === $expectedPrice && (int)$row['stock'] === 9
+            && $row['name'] === 'Remote fixture A' && $row['description'] === 'Remote fixture description'
+            && $row['cover'] === '/local-fixture.png' && (int)$row['api_status'] === 1
+            && (float)$row['shared_premium'] === (float)$premium
+            && $readDetailFirstControl($sourceId) === $control,
+            'fresh detail-first did not preserve markup, text fairness, one-detail reuse or independent catalog progress');
+        $detailFirstRuns++;
+    }
+
+    // Catalog failure occurs after the allowed trade save and cannot erase its counters.
+    foreach (['522', 'timeout', 'empty'] as $failureIndex => $failureKind) {
+        $sourceId = 19003 + $failureIndex;
+        $seedSelectionSource($sourceId, ['A' => ['api_status' => 1, 'shared_premium' => '0.10']]);
+        $oldSuccess = time() - 61;
+        $detailFirstControl($sourceId, $oldSuccess, $oldSuccess);
+        $events = []; $requests = [];
+        $catalogFailure = static function () use ($failureKind, &$events): array {
+            $events[] = 'catalog';
+            if ($failureKind === 'timeout') {
+                throw new \Pika\LocalExtensions\PikaSupplySync\Service\RetryableTransportFailure(28);
+            }
+            if ($failureKind === 'empty') return ['status' => 200,
+                'content_type' => 'application/json', 'body' => '{"code":200,"data":[]}'];
+            return ['status' => 522, 'content_type' => 'text/plain', 'body' => 'fixture failure'];
+        };
+        $observed = $observeRun($makeSelectionService([], ['A' => $detailFirstDetail('A')], $requests,
+            beforeDetailReply: static function () use (&$events): void { $events[] = 'detail'; },
+            catalogReply: $catalogFailure), $detailFirstOptions($sourceId, ['price', 'inventory', 'options']));
+        $row = $sourceRows($sourceId)[0];
+        $control = $readDetailFirstControl($sourceId);
+        resumeExpect(($events[0] ?? null) === 'detail' && $requests['detail'] === 1
+            && $requests['catalog'] === ($failureKind === 'timeout' ? 3 : 1)
+            && $requests['other'] === 0 && (float)$row['price'] === 44.0 && (int)$row['stock'] === 9
+            && $observed['writes'] === 1 && $observed['result']['status'] === 'partial'
+            && ($observed['result']['applied']['sync'] ?? 0) === 1
+            && (new StateStore())->read($sourceId)['last_result']['applied']['sync'] === 1
+            && $control['last_success_at'] === $oldSuccess && $control['last_attempt_at'] >= $oldSuccess,
+            'late catalog failure discarded completed detail-first writes/counters or claimed a successful inspection: ' . $failureKind);
+        $detailFirstRuns++;
+    }
+
+    // Required selected fields must be checked before defaults or currency conversion.
+    $detailFirstInvalid = ['missing-code', 'wrong-code', 'missing-price', 'missing-config', 'missing-stock',
+        'zero-stock', 'type-two-missing-code', 'type-two-wrong-code', 'type-two-empty-tree', 'detail-522', 'detail-timeout'];
+    foreach ($detailFirstInvalid as $invalidIndex => $invalidKind) {
+        $sourceId = 19010 + $invalidIndex;
+        $sourceType = str_starts_with($invalidKind, 'type-two-') ? 2 : 0;
+        $seedSelectionSource($sourceId, ['A' => ['api_status' => 1]], $sourceType);
+        $now = time(); $detailFirstControl($sourceId, $now, $now);
+        $detail = $detailFirstDetail('A');
+        if (in_array($invalidKind, ['missing-code', 'type-two-missing-code'], true)) unset($detail['code']);
+        if (in_array($invalidKind, ['wrong-code', 'type-two-wrong-code'], true)) $detail['code'] = 'B';
+        if ($invalidKind === 'missing-price') unset($detail['price']);
+        if ($invalidKind === 'missing-config') unset($detail['config']);
+        if ($invalidKind === 'missing-stock') unset($detail['stock']);
+        if ($invalidKind === 'zero-stock') $detail['stock'] = 0;
+        $detailReply = static function () use ($invalidKind): ?array {
+            if ($invalidKind === 'type-two-empty-tree') return ['status' => 200,
+                'content_type' => 'application/json', 'body' => '{"code":200,"data":[]}'];
+            if ($invalidKind === 'detail-522') return ['status' => 522,
+                'content_type' => 'text/plain', 'body' => 'fixture failure'];
+            if ($invalidKind === 'detail-timeout') {
+                throw new \Pika\LocalExtensions\PikaSupplySync\Service\RetryableTransportFailure(28);
+            }
+            return null;
+        };
+        $before = $sourceRows($sourceId); $requests = [];
+        $observed = $observeRun($makeSelectionService([], ['A' => $detail], $requests,
+            catalogReply: $forbidDetailFirstCatalog, sourceType: $sourceType, detailReply: $detailReply),
+            $detailFirstOptions($sourceId, ['price', 'inventory', 'options']));
+        resumeExpect($observed['writes'] === 0 && $sourceRows($sourceId) === $before
+            && $requests['catalog'] === 0 && $requests['other'] === 0
+            && $requests['detail'] === ($invalidKind === 'detail-timeout' ? 3 : 1)
+            && ($observed['result']['applied']['sync'] ?? 0) === 0
+            && ($observed['result']['applied']['zero'] ?? 0) === 0
+            && $observed['result']['status'] !== 'ok',
+            'detail-first invalid/zero/failed detail changed a row or reported full success: ' . $invalidKind);
+        $detailFirstRuns++;
+    }
+
+    // A positive detail is not authority to resurrect inventory or re-open sharing.
+    $seedSelectionSource(19030, ['A' => ['api_status' => 1, 'stock' => 0],
+        'B' => ['api_status' => 0], 'C' => ['api_status' => 1, 'status' => 0]]);
+    $now = time(); $detailFirstControl(19030, $now, $now);
+    $before = $sourceRows(19030); $requests = [];
+    $observed = $observeRun($makeSelectionService([], ['A' => $detailFirstDetail('A'),
+        'B' => $detailFirstDetail('B'), 'C' => $detailFirstDetail('C')], $requests,
+        catalogReply: $forbidDetailFirstCatalog), $detailFirstOptions(19030, Options::SYNC_FIELDS));
+    resumeExpect($observed['writes'] === 0 && $sourceRows(19030) === $before
+        && $requests === ['catalog' => 0, 'detail' => 0, 'other' => 0],
+        'catalog-free detail-first resurrected or reopened a locally closed product');
+    $detailFirstRuns++;
+
+    // Inventory disabled means stock is neither required nor synthesized from an absent key.
+    $seedSelectionSource(19031, ['A' => ['api_status' => 1, 'shared_premium' => '0.10']]);
+    $now = time(); $detailFirstControl(19031, $now, $now);
+    $detail = $detailFirstDetail('A'); unset($detail['stock']);
+    $requests = [];
+    $observed = $observeRun($makeSelectionService([], ['A' => $detail], $requests,
+        catalogReply: $forbidDetailFirstCatalog), $detailFirstOptions(19031, ['price']));
+    resumeExpect($observed['result']['status'] === 'ok' && $observed['writes'] === 1
+        && (float)$sourceRows(19031)[0]['price'] === 44.0 && (int)$sourceRows(19031)[0]['stock'] === 7
+        && $sourceRows(19031)[0]['shared_stock'] === '["keep-local"]'
+        && $requests === ['catalog' => 0, 'detail' => 1, 'other' => 0],
+        'price-only detail-first required or defaulted unselected stock');
+    $detailFirstRuns++;
+
+    // Missing/stale/future evidence and changed source identity cannot authorize trade.
+    foreach (['missing', 'stale', 'future', 'fingerprint'] as $staleIndex => $staleKind) {
+        $sourceId = 19040 + $staleIndex;
+        $seedSelectionSource($sourceId, ['A' => ['api_status' => 1]]);
+        $now = time();
+        if ($staleKind !== 'missing') {
+            $stamp = $staleKind === 'stale' ? $now - 601 : ($staleKind === 'future' ? $now + 60 : $now);
+            $detailFirstControl($sourceId, $stamp, $stamp);
+        }
+        if ($staleKind === 'fingerprint') {
+            DB::table('shared')->where('id', $sourceId)->update(['app_key' => 'changed-synthetic-identity']);
+            $reset = $readDetailFirstControl($sourceId);
+            resumeExpect($reset['last_attempt_at'] === 0 && $reset['last_success_at'] === 0 && $reset['cursor'] === '',
+                'source fingerprint change preserved stale catalog authority');
+        }
+        $before = $sourceRows($sourceId); $requests = [];
+        $observed = $observeRun($makeSelectionService([], ['A' => $detailFirstDetail('A')], $requests,
+            catalogReply: static fn(): array => ['status' => 522, 'content_type' => 'text/plain', 'body' => 'fixture failure']),
+            $detailFirstOptions($sourceId, ['price', 'inventory', 'options']));
+        resumeExpect($observed['writes'] === 0 && $sourceRows($sourceId) === $before
+            && $requests['detail'] === 0 && $requests['other'] === 0 && $requests['catalog'] <= 1
+            && $observed['result']['status'] !== 'ok',
+            'missing/stale/future/foreign catalog evidence authorized trade: ' . $staleKind);
+        if ($staleKind !== 'future') resumeExpect($requests['catalog'] === 1,
+            'untrusted catalog state could not attempt a bounded bootstrap inspection: ' . $staleKind);
+        $detailFirstRuns++;
+    }
+
+    // The new sidecar fails closed without weakening old state decoding or changing its schema.
+    $seedSelectionSource(19050, ['A' => ['api_status' => 1]]);
+    $now = time(); $control = $detailFirstControl(19050, $now, $now);
+    $controlPath = $targetRuntime . '/source-19050.catalog.json';
+    $controlBytes = file_get_contents($controlPath);
+    $before = $sourceRows(19050);
+    foreach (['malformed' => '{', 'extra' => json_encode($control + ['unapproved' => true], JSON_THROW_ON_ERROR)] as $kind => $bytes) {
+        file_put_contents($controlPath, $bytes); chmod($controlPath, 0600);
+        $requests = [];
+        $observed = $observeRun($makeSelectionService([], ['A' => $detailFirstDetail('A')], $requests,
+            catalogReply: $forbidDetailFirstCatalog), $detailFirstOptions(19050, ['price']));
+        resumeExpect($observed['writes'] === 0 && $sourceRows(19050) === $before
+            && $requests === ['catalog' => 0, 'detail' => 0, 'other' => 0]
+            && $observed['result']['status'] !== 'ok', 'invalid catalog control did not fail closed: ' . $kind);
+        $detailFirstRuns++;
+    }
+    file_put_contents($controlPath, $controlBytes); chmod($controlPath, 0600);
+    $legacy = (new StateStore())->read(19050);
+    $legacyWithoutPriority = $legacy; unset($legacyWithoutPriority['priority_cursor']);
+    file_put_contents($targetRuntime . '/source-19050.json', json_encode($legacyWithoutPriority, JSON_THROW_ON_ERROR));
+    chmod($targetRuntime . '/source-19050.json', 0600);
+    resumeExpect((new StateStore())->read(19050) === $legacy && $readDetailFirstControl(19050) === $control,
+        'catalog sidecar changed legacy state decoding or borrowed its progress');
+    $requests = [];
+    $observed = $observeRun($makeSelectionService([], ['A' => $detailFirstDetail('A')], $requests,
+        catalogReply: $forbidDetailFirstCatalog), $detailFirstOptions(19050, ['price']));
+    resumeExpect($observed['result']['status'] === 'ok' && $requests['catalog'] === 0
+        && array_keys((new StateStore())->read(19050)) === array_keys($legacy),
+        'detail-first migration inserted new keys into legacy state');
+    $detailFirstRuns++;
+
+    // Bootstrap may recover a zero-stock row only with catalog-positive and matching detail,
+    // never a locally disabled/API-closed row.
+    $seedSelectionSource(19060, ['A' => ['api_status' => 1, 'stock' => 0, 'shared_premium' => '0.10'],
+        'B' => ['api_status' => 0, 'stock' => 0], 'C' => ['api_status' => 1, 'stock' => 0, 'status' => 0]]);
+    $before = $sourceRows(19060); $requests = [];
+    $observed = $observeRun($makeSelectionService($selectionCatalog(['A' => 9, 'B' => 9, 'C' => 9]),
+        ['A' => $detailFirstDetail('A'), 'B' => $detailFirstDetail('B'), 'C' => $detailFirstDetail('C')], $requests),
+        $detailFirstOptions(19060, ['price', 'inventory', 'options']));
+    $after = $sourceRows(19060);
+    resumeExpect($requests === ['catalog' => 1, 'detail' => 1, 'other' => 0] && $observed['writes'] === 1
+        && (int)$after[0]['stock'] === 9 && $after[0]['price'] === $before[0]['price']
+        && (int)$after[0]['api_status'] === 1 && (int)$after[0]['status'] === 1
+        && $after[1] === $before[1] && $after[2] === $before[2]
+        && $readDetailFirstControl(19060)['last_success_at'] > 0,
+        'catalog bootstrap failed strict recovery or reopened a protected row');
+    $detailFirstRuns++;
+
+    // Full-pool missing/explicit-zero fuses run even when the inspection action cap is small.
+    foreach ([['A' => 0, 'B' => 0, 'C' => 0], ['A' => 9]] as $fuseIndex => $stocks) {
+        $sourceId = 19061 + $fuseIndex;
+        $seedSelectionSource($sourceId, ['A' => ['api_status' => 1], 'B' => ['api_status' => 1], 'C' => ['api_status' => 1]]);
+        $before = $sourceRows($sourceId); $requests = [];
+        $observed = $observeRun($makeSelectionService($selectionCatalog($stocks), [], $requests),
+            $detailFirstOptions($sourceId, ['inventory'], ['batch_limit' => 2, 'zero_fuse_percent' => 10, 'zero_fuse_min' => 1]));
+        resumeExpect($observed['writes'] === 0 && $sourceRows($sourceId) === $before
+            && ($observed['result']['mass_zero_fuse'] ?? false) === true && $requests['detail'] === 0
+            && $requests['catalog'] === 1 && ($observed['result']['applied']['zero'] ?? 0) === 0,
+            'detail-first inspection weakened the full-pool zero fuse: ' . $fuseIndex);
+        $detailFirstRuns++;
+    }
+
+    // B=2 reserves one inspection slot while D trades; the catalog cursor independently reaches A/B/C.
+    $seedSelectionSource(19063, ['A' => ['api_status' => 0], 'B' => ['api_status' => 0],
+        'C' => ['api_status' => 0], 'D' => ['api_status' => 1]]);
+    $legacy = (new StateStore())->read(19063);
+    $legacy['cursor'] = 'Z'; $legacy['priority_cursor'] = 'Y'; (new StateStore())->write(19063, $legacy);
+    $control = $detailFirstControl(19063, 0, 0);
+    foreach (['A', 'B', 'C'] as $index => $expectedCursor) {
+        $stamp = time() - 61;
+        $detailFirstControl(19063, $stamp, $stamp, $control['cursor']);
+        $requests = [];
+        $observed = $observeRun($makeSelectionService($selectionCatalog(['A' => 0, 'B' => 0, 'C' => 0, 'D' => 12]),
+            ['D' => $detailFirstDetail('D', 10 + $index)], $requests),
+            $detailFirstOptions(19063, ['inventory'], ['batch_limit' => 2]));
+        $control = $readDetailFirstControl(19063);
+        $currentLegacy = (new StateStore())->read(19063);
+        resumeExpect($requests === ['catalog' => 1, 'detail' => 1, 'other' => 0]
+            && $observed['writes'] === 2 && ($observed['result']['applied']['zero'] ?? 0) === 1
+            && ($observed['result']['applied']['sync'] ?? 0) === 1
+            && count(array_filter($sourceRows(19063), static fn(array $row): bool => (int)$row['stock'] === 0)) === $index + 1
+            && $control['cursor'] === $expectedCursor && $currentLegacy['cursor'] === 'D'
+            && $currentLegacy['priority_cursor'] === 'Y',
+            'inspection cursor skipped a row, borrowed trade progress or exceeded the common batch cap');
+        $detailFirstRuns++;
+    }
+
+    // Exhausting the unchanged 25-image source quota must not hold the selected text group.
+    $quotaRows = $quotaDetails = [];
+    foreach (range(1, 26) as $number) {
+        $code = sprintf('DFQuota%02d', $number);
+        $quotaRows[$code] = ['api_status' => 1];
+        $quotaDetails[$code] = ['cover' => '/fixture-cover-' . $code . '.png'] + $detailFirstDetail($code);
+    }
+    $seedSelectionSource(19064, $quotaRows);
+    $now = time(); $detailFirstControl(19064, $now, $now);
+    $requests = [];
+    $observed = $observeRun($makeSelectionService([], $quotaDetails, $requests,
+        imageResponse: static fn(): array => ['status' => 200, 'content_type' => 'image/png', 'body' => $redImage],
+        catalogReply: $forbidDetailFirstCatalog),
+        $detailFirstOptions(19064, ['name', 'description', 'cover'], ['batch_limit' => 26]));
+    $rows = $sourceRows(19064);
+    resumeExpect($requests === ['catalog' => 0, 'detail' => 26, 'other' => 0, 'image' => 25]
+        && ($observed['result']['field_sync']['media_deferred'] ?? 0) === 1
+        && $rows[25]['cover'] === '/local-fixture.png',
+        'detail-first text/cover grouping bypassed the existing image quota or lost the deferred cover');
+    foreach ($rows as $row) resumeExpect($row['name'] === 'Remote fixture ' . $row['shared_code']
+        && $row['description'] === 'Remote fixture description',
+        'image quota incorrectly prevented selected detail-first text from updating');
+    $detailFirstRuns++;
+
+    // A due explicit-zero catalog is still not authority to write inventory when its checkbox is off.
+    $seedSelectionSource(19065, ['A' => ['api_status' => 1, 'shared_premium' => '0.10']]);
+    $stamp = time() - 61; $detailFirstControl(19065, $stamp, $stamp);
+    $detail = $detailFirstDetail('A'); unset($detail['stock']);
+    $requests = [];
+    $observed = $observeRun($makeSelectionService($selectionCatalog(['A' => 0]), ['A' => $detail], $requests),
+        $detailFirstOptions(19065, ['price']));
+    resumeExpect($observed['writes'] === 1 && (float)$sourceRows(19065)[0]['price'] === 44.0
+        && (int)$sourceRows(19065)[0]['stock'] === 7 && (int)$sourceRows(19065)[0]['api_status'] === 1
+        && ($observed['result']['applied']['zero'] ?? 0) === 0
+        && $requests === ['catalog' => 1, 'detail' => 1, 'other' => 0],
+        'due catalog inspection ignored the disabled inventory checkbox');
+    $detailFirstRuns++;
+
+    // Preserve the service guard even if an internal caller mutates validated options.
+    $seedSelectionSource(19066, ['A' => ['api_status' => 1]]);
+    $now = time(); $detailFirstControl(19066, $now, $now);
+    $before = $sourceRows(19066); $requests = [];
+    $singleSlot = $detailFirstOptions(19066, ['inventory']);
+    $singleSlot->batchLimit = 1;
+    $observed = $observeRun($makeSelectionService([], ['A' => $detailFirstDetail('A')], $requests,
+        catalogReply: $forbidDetailFirstCatalog), $singleSlot);
+    resumeExpect($observed['result']['status'] === 'error' && $observed['writes'] === 0
+        && $sourceRows(19066) === $before && $requests === ['catalog' => 0, 'detail' => 0, 'other' => 0],
+        'detail-first B=1 was not rejected before network or database writes');
+    $detailFirstRuns++;
+
+    // Filter ineligible entries before taking the single inspection slot, not after it.
+    // The fuse still sees both eligible active rows (B/D), not just selected B.
+    foreach (['unmanaged', 'inventory-off'] as $skipIndex => $skipKind) {
+        $sourceId = 19070 + $skipIndex;
+        $firstRow = ['api_status' => 0] + ($skipKind === 'unmanaged'
+            ? ['code' => 'UNMANAGED-FIRST'] : ['inventory_sync' => 0]);
+        $seedSelectionSource($sourceId, ['A' => $firstRow, 'B' => ['api_status' => 0], 'D' => ['api_status' => 1]]);
+        $stamp = time() - 61; $detailFirstControl($sourceId, $stamp, $stamp);
+        $before = $sourceRows($sourceId); $requests = [];
+        $observed = $observeRun($makeSelectionService($selectionCatalog(['A' => 0, 'B' => 0, 'D' => 10]),
+            ['D' => $detailFirstDetail('D', 10)], $requests), $detailFirstOptions($sourceId, ['inventory'],
+                ['batch_limit' => 2, 'zero_fuse_percent' => 75, 'zero_fuse_min' => 1]));
+        $after = $sourceRows($sourceId);
+        resumeExpect($requests === ['catalog' => 1, 'detail' => 1, 'other' => 0]
+            && $observed['writes'] === 2 && $after[0] === $before[0] && (int)$after[1]['stock'] === 0
+            && (int)$after[2]['stock'] === 10 && ($observed['result']['applied']['zero'] ?? 0) === 1
+            && ($observed['result']['mass_zero_fuse'] ?? true) === false
+            && (float)($observed['result']['mass_zero_ratio'] ?? -1) === 50.0
+            && $readDetailFirstControl($sourceId)['cursor'] === 'B',
+            'an ineligible first entry starved inspection or narrowed the full-pool fuse: ' . $skipKind);
+        $detailFirstRuns++;
+    }
+
+    // A permanently invalid recovery detail consumes its attempted slot once,
+    // so the next bounded pass can clear B without restoring A or hiding the failure.
+    foreach (['stock', 'code'] as $missingIndex => $missingField) {
+        $sourceId = 19072 + $missingIndex;
+        $seedSelectionSource($sourceId, ['A' => ['api_status' => 1, 'stock' => 0],
+            'B' => ['api_status' => 0], 'D' => ['api_status' => 1]]);
+        $invalidRecovery = $detailFirstDetail('A'); unset($invalidRecovery[$missingField]);
+        $before = $sourceRows($sourceId);
+        $control = $detailFirstControl($sourceId, 0, 0);
+        foreach (['A', 'B'] as $round => $expectedCursor) {
+            $stamp = time() - 61;
+            $detailFirstControl($sourceId, $stamp, $stamp, $control['cursor']);
+            $requests = [];
+            $observed = $observeRun($makeSelectionService($selectionCatalog(['A' => 9, 'B' => 0, 'D' => 12]),
+                ['A' => $invalidRecovery, 'D' => $detailFirstDetail('D', 10 + $round)], $requests),
+                $detailFirstOptions($sourceId, ['inventory'], ['batch_limit' => 2]));
+            $after = $sourceRows($sourceId); $control = $readDetailFirstControl($sourceId);
+            resumeExpect($requests === ['catalog' => 1, 'detail' => ($round === 0 ? 2 : 1), 'other' => 0]
+                && $after[0] === $before[0] && (int)$after[1]['stock'] === ($round === 0 ? 7 : 0)
+                && $control['cursor'] === $expectedCursor && $observed['writes'] === $round + 1
+                && ($observed['result']['applied']['sync'] ?? 0) === 1
+                && ($observed['result']['applied']['zero'] ?? 0) === $round,
+                'invalid recovery detail blocked the next inspection entry or revived A: ' . $missingField);
+            if ($round === 0) resumeExpect($observed['result']['status'] === 'partial'
+                && ($observed['result']['failed'] ?? 0) === 1
+                && ($observed['result']['errors'][0]['code_hash'] ?? '') === substr(hash('sha256', 'A'), 0, 12),
+                'failed inspection recovery was not counted and attributed to A: ' . $missingField);
+            $detailFirstRuns++;
+        }
+    }
+
     fwrite(STDOUT, "local supply SyncService resume PASS; compact stock-priority actions=15P+5M; compact mixed actions=12P+4O+4M; compact first details=16; compact media continuation=16; compact failures=13; selection cases=6; price/specification runs=7; image runs=13; unknown metadata runs="
         . count($unknownCases) . '; config ownership runs=' . $followRuns
         . '; twenty-percent two-target runs=' . $twentyRuns
         . '; targeted runs=' . $targetRuns
         . '; independent scope runs=' . $independentScopeRuns
         . '; legacy type-two ten-percent runs=' . $legacyTypeTwoRuns
+        . '; detail-first synthetic runs=' . $detailFirstRuns
         . '; per-item business records=2; counted/truncated errors=25/20; maximum diagnostic JSON bytes=' . strlen($maximumJson)
         . "; currency=official; quote/cost=official; submit=prevalidation-only; network=injected; database=sqlite-memory; uid="
         . posix_geteuid() . "\n");

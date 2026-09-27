@@ -89,7 +89,8 @@ test('admin API converts internal failures without leaking them and accepts an e
         return;
     }
     const result = spawnSync('docker', [
-        'run', '--rm', '-v', `${root}:/release:ro`, '-w', '/release',
+        'run', '--rm', '--network', 'none', '--pull', 'never', '--read-only',
+        '-v', `${root}:/release:ro`, '-w', '/release',
         'php:8.3-cli', 'php', 'tests/local-manager-api-behavior.php',
     ], {encoding: 'utf8'});
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -191,7 +192,12 @@ test('runtime initializer uses only the fixed production state root in isolated 
         return;
     }
     const result = spawnSync('docker', [
-        'run', '--rm', '-v', `${root}:/release:ro`, 'php:8.2-cli', 'sh', '-lc',
+        'run', '--rm', '--network', 'none', '--pull', 'never', '--read-only',
+        '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
+        '--tmpfs', '/site:rw,noexec,nosuid,size=1m,mode=0755',
+        '--tmpfs', '/site-gid-zero:rw,noexec,nosuid,size=1m,mode=0755',
+        '--tmpfs', '/var/lib:rw,noexec,nosuid,size=16m,mode=0755,uid=0,gid=0',
+        '-v', `${root}:/release:ro`, 'php:8.2-cli', 'sh', '-lc',
         `set -eu
          mkdir -p /site
          umask 0077
@@ -234,8 +240,11 @@ test('runtime initializer precisely rolls back newly-created control directories
             ? `test "$(stat -c '%u:%g:%a' /var/lib/pika-local-extensions)" = '0:0:755'`
             : 'test ! -e /var/lib/pika-local-extensions';
         const result = spawnSync('docker', [
-            'run', '--rm', '-v', `${root}:/release:ro`,
-            '--tmpfs', '/var/lib:rw,size=1m,nr_inodes=3',
+            'run', '--rm', '--network', 'none', '--pull', 'never', '--read-only',
+            '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
+            '--tmpfs', '/site:rw,noexec,nosuid,size=1m,mode=0755',
+            '-v', `${root}:/release:ro`,
+            '--tmpfs', '/var/lib:rw,size=1m,nr_inodes=3,mode=0755,uid=0,gid=0',
             'php:8.2-cli', 'sh', '-lc',
             `set -eu
              mkdir -p /site
@@ -266,7 +275,11 @@ test('runtime initializer routes thrown exceptions through exact cleanup', t => 
             ? `test "$(stat -c '%u:%g:%a' /var/lib/pika-local-extensions)" = '0:0:755'`
             : 'test ! -e /var/lib/pika-local-extensions';
         const result = spawnSync('docker', [
-            'run', '--rm', '-v', `${root}:/release:ro`, 'php:8.2-cli', 'sh', '-lc',
+            'run', '--rm', '--network', 'none', '--pull', 'never', '--read-only',
+            '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
+            '--tmpfs', '/site:rw,noexec,nosuid,size=1m,mode=0755',
+            '--tmpfs', '/var/lib:rw,noexec,nosuid,size=16m,mode=0755,uid=0,gid=0',
+            '-v', `${root}:/release:ro`, 'php:8.2-cli', 'sh', '-lc',
             `set -eu
              mkdir -p /site
              umask 0077

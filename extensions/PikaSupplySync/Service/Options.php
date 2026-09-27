@@ -22,6 +22,8 @@ final class Options
         public bool $dryRun,
         public ?array $syncFields,
         private array $upstreamConfigSourceIds,
+        public ?int $catalogIntervalSeconds,
+        public ?int $catalogMaxAgeSeconds,
     ) {
     }
 
@@ -63,6 +65,35 @@ final class Options
             throw new InvalidArgumentException('请完整保存六项同步选择');
         }
 
+        // No production cadence is implied. Both saved values explicitly opt in;
+        // execution overrides cannot enable a new synchronization policy.
+        $catalogValues = [];
+        foreach (['catalog_interval_seconds', 'catalog_max_age_seconds'] as $key) {
+            $raw = array_key_exists($key, $config) ? $config[$key] : 0;
+            if (!is_int($raw) && !is_string($raw)) {
+                throw new InvalidArgumentException("{$key} 必须是整数");
+            }
+            $catalogValues[$key] = self::integer($raw, 0, 604800, $key);
+        }
+        $catalogInterval = $catalogValues['catalog_interval_seconds'];
+        $catalogMaxAge = $catalogValues['catalog_max_age_seconds'];
+        if ($catalogInterval === 0 && $catalogMaxAge === 0) {
+            $catalogInterval = $catalogMaxAge = null;
+        } else {
+            $savedMode = $config['mode'] ?? self::MODE_BASIC;
+            $savedBatch = self::integer($config['batch_limit'] ?? 100, 1, 500, 'batch_limit');
+            if ($catalogInterval === 0 || $catalogMaxAge === 0 || $catalogMaxAge < $catalogInterval
+                || !is_string($savedMode) || strtolower(trim($savedMode)) !== self::MODE_BASIC
+                || $mode !== self::MODE_BASIC || $savedBatch < 2) {
+                throw new InvalidArgumentException('详情优先需要 basic、每批至少2件及成对的有效目录时间，最大陈旧时间不能短于巡检间隔');
+            }
+            foreach (self::SYNC_FIELDS as $field) {
+                if (!is_bool($config['sync_' . $field] ?? null)) {
+                    throw new InvalidArgumentException('详情优先需要明确保存六项同步选择');
+                }
+            }
+        }
+
         // Execution overrides (including CLI --source) cannot expand saved ownership.
         $followConfig = array_key_exists('follow_upstream_config', $config) ? $config['follow_upstream_config'] : false;
         if (!is_bool($followConfig)) {
@@ -92,6 +123,8 @@ final class Options
             $dryRun,
             $syncFields === [] ? null : $syncFields,
             $upstreamConfigSourceIds,
+            $catalogInterval,
+            $catalogMaxAge,
         );
     }
 
@@ -105,6 +138,11 @@ final class Options
     public function syncs(string $field): bool
     {
         return $this->syncFields === null || ($this->syncFields[$field] ?? false);
+    }
+
+    public function detailFirst(): bool
+    {
+        return $this->mode === self::MODE_BASIC && $this->catalogIntervalSeconds !== null;
     }
 
     public function premiumFactor(): float

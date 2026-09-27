@@ -103,6 +103,14 @@ namespace {
     $diagnosed = SupplySyncStatus::snapshot();
     expect($diagnosed['sources'][0]['actual']['catalog_diagnostic'] === $diagnostic
         && !str_contains(json_encode($diagnosed), 'secret-sentinel'), 'directory diagnosis escaped its fixed projection');
+    put($directory . '/sync.log', $log(array_replace($entry, ['status' => 'partial',
+        'detail_first' => true, 'catalog_status' => 'failed', 'catalog_diagnostic' => $diagnostic,
+        'errors' => [['message' => '目录巡检未完成：已提交的详情更新保留，未确认商品不清零或恢复']]]),
+        '2026-09-22T05:00:00+00:00'));
+    $lateCatalogFailure = SupplySyncStatus::snapshot()['sources'][0]['actual'];
+    expect($lateCatalogFailure['status'] === 'partial' && $lateCatalogFailure['applied']['sync'] === 2
+        && $lateCatalogFailure['catalog_diagnostic'] === $diagnostic,
+        'late catalog failure hid committed writes or its bounded diagnosis');
     put($directory . '/sync.log', $log(array_replace($entry, ['status' => 'error', 'catalog_diagnostic' => [
         'category' => 'secret-sentinel', 'http_status' => 600, 'curl_code' => '23', 'elapsed_ms' => 480001, 'attempts' => -1,
     ]]), '2026-09-22T05:00:00+00:00'));

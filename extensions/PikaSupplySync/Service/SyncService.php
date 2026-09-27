@@ -170,41 +170,69 @@ final class SyncService
             }
 
             $planner = new CatalogPlanner();
-            $this->phase = 'catalog';
-            try {
-                $this->sourcePolicy->assertSafe($source);
-                $compact = $options->mode === Options::MODE_BASIC && (int)$source->type === 0
-                    && (new PlannedCategoryMapper())->hasMirrorMapping($sourceId);
-                $allowManualNullStock = $options->mode === Options::MODE_BASIC && (int)$source->type === 0
-                    && !$compact && $targetHashes === null;
-                if ($compact) {
-                    // Keep the legacy currency validation even though this projection has no prices.
+            $detailFirst = $options->detailFirst() && $targetHashes === null;
+            $catalogControl = null;
+            $catalogFresh = false;
+            $catalogDue = false;
+            $catalog = [];
+            if ($detailFirst) {
+                try {
+                    if ($options->batchLimit < 2) {
+                        throw new RuntimeException('详情优先每轮至少需要两个机会，以分别推进详情和目录巡检');
+                    }
+                    $this->sourcePolicy->assertSafe($source);
                     SharedCurrency::factor($source);
-                    $catalog = (new UpstreamCategoryTree())->flatten($this->gateway->categoryTree($source));
-                } else {
-                    $catalog = $planner->flatten($this->gateway->items($source), $allowManualNullStock);
+                    $catalogControl = (new StateStore())->readCatalogControl($sourceId, SourceIdentity::fingerprint($source));
+                    $now = time();
+                    if ($catalogControl['last_attempt_at'] > $now || $catalogControl['last_success_at'] > $now) {
+                        throw new RuntimeException('目录巡检时间位于未来，已停止详情优先同步');
+                    }
+                    $catalogFresh = $catalogControl['last_success_at'] > 0
+                        && $now - $catalogControl['last_success_at'] <= $options->catalogMaxAgeSeconds;
+                    $catalogDue = $catalogControl['last_attempt_at'] === 0
+                        || $now - $catalogControl['last_attempt_at'] >= $options->catalogIntervalSeconds;
+                } catch (\Throwable $exception) {
+                    return $this->error($sourceId, $this->message($exception, $source));
                 }
-                $this->budget->checkpoint();
-            } catch (BudgetExceeded $exception) {
-                throw $exception;
-            } catch (\Throwable $exception) {
-                $diagnostic = $exception instanceof UpstreamFailure ? $exception->diagnostics : null;
-                $message = ($diagnostic['category'] ?? null) === 'response_size'
-                    ? '远端商品目录超过 16 MiB 安全上限，本货源本轮未执行商品写入；缩小批量不会减少整份目录大小。'
-                    : $this->message($exception, $source);
-                return $this->error($sourceId, $message, $diagnostic);
             }
-            if ($catalog === []) {
-                if ($targetHashes !== null) return $this->error($sourceId, '远端目录为空，定向同步未执行');
-                $result = [
-                    'source_id' => $sourceId,
-                    'status' => 'held_empty_catalog',
-                    'catalog_total' => 0,
-                    'catalog_unknown' => 0,
-                    'message' => '远端商品目录为空，未执行任何商品写入',
-                ];
-                $this->log($result);
-                return $result;
+            $this->phase = 'catalog';
+            $allowManualNullStock = false;
+            if (!$detailFirst) {
+                try {
+                    $this->sourcePolicy->assertSafe($source);
+                    $compact = $options->mode === Options::MODE_BASIC && (int)$source->type === 0
+                        && (new PlannedCategoryMapper())->hasMirrorMapping($sourceId);
+                    $allowManualNullStock = $options->mode === Options::MODE_BASIC && (int)$source->type === 0
+                        && !$compact && $targetHashes === null;
+                    if ($compact) {
+                        // Keep the legacy currency validation even though this projection has no prices.
+                        SharedCurrency::factor($source);
+                        $catalog = (new UpstreamCategoryTree())->flatten($this->gateway->categoryTree($source));
+                    } else {
+                        $catalog = $planner->flatten($this->gateway->items($source), $allowManualNullStock);
+                    }
+                    $this->budget->checkpoint();
+                } catch (BudgetExceeded $exception) {
+                    throw $exception;
+                } catch (\Throwable $exception) {
+                    $diagnostic = $exception instanceof UpstreamFailure ? $exception->diagnostics : null;
+                    $message = ($diagnostic['category'] ?? null) === 'response_size'
+                        ? '远端商品目录超过 16 MiB 安全上限，本货源本轮未执行商品写入；缩小批量不会减少整份目录大小。'
+                        : $this->message($exception, $source);
+                    return $this->error($sourceId, $message, $diagnostic);
+                }
+                if ($catalog === []) {
+                    if ($targetHashes !== null) return $this->error($sourceId, '远端目录为空，定向同步未执行');
+                    $result = [
+                        'source_id' => $sourceId,
+                        'status' => 'held_empty_catalog',
+                        'catalog_total' => 0,
+                        'catalog_unknown' => 0,
+                        'message' => '远端商品目录为空，未执行任何商品写入',
+                    ];
+                    $this->log($result);
+                    return $result;
+                }
             }
 
             $this->phase = 'planning';
@@ -221,7 +249,13 @@ final class SyncService
                     foreach ($local as &$row) $row['inventory_sync'] = 0;
                     unset($row);
                 }
-                $plan = $planner->plan(
+                $localOptions = clone $options;
+                if ($detailFirst && $catalogDue && $catalogFresh) {
+                    $localOptions->batchLimit = max(0, $options->batchLimit - 1);
+                }
+                $plan = $detailFirst ? $planner->planLocal(
+                    $catalogFresh ? $local : [], (string)$state['cursor'], $localOptions, $schedule,
+                ) : $planner->plan(
                     $catalog,
                     $local,
                     (string)$state['cursor'],
@@ -247,8 +281,9 @@ final class SyncService
                 'status' => $plan['counts']['held_unknown'] > 0 ? 'partial' : 'ok',
                 'mode' => $options->mode,
                 'dry_run' => $options->dryRun,
-                'catalog_total' => count($catalog),
-                'catalog_unknown' => count(array_filter($catalog, static fn(array $item): bool => $item['stock'] === null)),
+                'catalog_total' => $detailFirst ? (int)($state['last_result']['catalog_total'] ?? 0) : count($catalog),
+                'catalog_unknown' => $detailFirst ? (int)($state['last_result']['catalog_unknown'] ?? 0)
+                    : count(array_filter($catalog, static fn(array $item): bool => $item['stock'] === null)),
                 'local_total' => count($local),
                 'planned' => $plan['counts'],
                 'applied' => [
@@ -273,6 +308,11 @@ final class SyncService
             ];
             if ($targetHashes !== null) $result += ['targeted' => true, 'target_code_hashes' => $targetHashes,
                 'verified_code_hashes' => []];
+            if ($detailFirst) {
+                $result['detail_first'] = true;
+                $result['catalog_status'] = $catalogFresh ? 'fresh' : 'stale';
+                if (!$catalogFresh) $result['status'] = 'partial';
+            }
             if ($scheduled) {
                 $result['field_sync'] = [
                     'trade_planned' => $plan['trade_planned'], 'noncover_saved' => 0,
@@ -302,6 +342,7 @@ final class SyncService
             $failedCodes = [];
             $heldCodes = [];
             $selectionHeldCodes = [];
+            $actionsStarted = 0;
 
             $this->phase = 'actions';
             foreach ($plan['actions'] as $action) {
@@ -311,18 +352,23 @@ final class SyncService
                 if (!in_array($lane, $scheduled ? ['normal', 'priority', 'media'] : ['normal', 'priority'], true)) {
                     throw new RuntimeException('同步计划游标通道不正确');
                 }
-                if ($lane === 'media' && ($sourceMediaBlocked || $this->roundMediaBlocked)) continue;
+                $imageBlocked = $sourceMediaBlocked || $this->roundMediaBlocked;
+                if ($lane === 'media' && $imageBlocked
+                    && (!$detailFirst || (!$options->syncs('name') && !$options->syncs('description')))) continue;
                 $coverFailed = false;
                 $actionStarted = false;
                 $actionFailed = false;
                 try {
                     $this->budget->checkpoint();
                     $actionStarted = true;
+                    $actionsStarted++;
                     if ($scheduled) {
                         $schedule['next_slot'] = $action['next_slot'];
                         if ($lane === 'media') {
                             $schedule['media_cursor'] = $code;
-                            $result['field_sync']['media_attempted']++;
+                            if (!$detailFirst || ($options->syncs('cover') && !$imageBlocked)) {
+                                $result['field_sync']['media_attempted']++;
+                            }
                         }
                     }
                     if ($type === 'hold_zero' || $type === 'held_unknown') {
@@ -353,8 +399,11 @@ final class SyncService
                         $result['applied']['zero']++;
                     } elseif ($scheduled) {
                         $wasSaved = ($prepared[$code]['noncover_applied'] ?? false) === true;
-                        $outcome = $this->syncExisting($source, $code, $remoteItem, $options, $coverFailed,
-                            null, $allowManualNullStock, true, $prepared[$code]);
+                        $actionOptions = $detailFirst ? $this->fieldOptions($options, $lane === 'media'
+                            ? ['name', 'description', 'cover'] : ['price', 'inventory', 'options']) : $options;
+                        $outcome = $this->syncExisting($source, $code, $remoteItem, $actionOptions, $coverFailed,
+                            null, $allowManualNullStock, true, $prepared[$code],
+                            $detailFirst ? $options : null, $detailFirst ? $lane : null);
                         $savedNow = !$wasSaved && ($prepared[$code]['noncover_applied'] ?? false) === true;
                         if ($savedNow) {
                             $result['field_sync']['noncover_saved']++;
@@ -376,7 +425,8 @@ final class SyncService
                                 $selectionHeldCodes[$code] = true;
                             }
                         }
-                        if ($lane === 'media' && !in_array($outcome, ['held_race', 'held_unknown'], true)
+                        if ($lane === 'media' && (!$detailFirst || ($options->syncs('cover') && !$imageBlocked))
+                            && !in_array($outcome, ['held_race', 'held_unknown'], true)
                             && isset($prepared[$code]['item'])) {
                             if ($this->refreshExistingCover($source, $code, $prepared[$code], $remoteItem, $options, $coverFailed)) {
                                 $result['field_sync']['media_refreshed']++;
@@ -439,7 +489,8 @@ final class SyncService
                         $exception->safeDiagnostics ?? ['category' => 'budget']);
                     break;
                 } catch (\Throwable $exception) {
-                    if ($scheduled && $lane === 'media' && $actionStarted) $result['field_sync']['media_failed']++;
+                    if ($scheduled && $lane === 'media' && $actionStarted
+                        && (!$detailFirst || ($options->syncs('cover') && !$imageBlocked))) $result['field_sync']['media_failed']++;
                     $alreadyReported = $scheduled && ($prepared[$code]['error'] ?? null) === $exception
                         && ($prepared[$code]['error_reported'] ?? false) === true;
                     unset($result['failure_diagnostic']);
@@ -464,6 +515,11 @@ final class SyncService
                 }
             }
 
+            if ($detailFirst && $catalogDue && !$budgetExhausted) {
+                $this->inspectCatalog($source, $options, $stateStore, $catalogControl, $remoteItem,
+                    $prepared, $result, max(0, $options->batchLimit - $actionsStarted), $catalog, $appliedCodes);
+            }
+
             if ($scheduled) {
                 $result['field_sync']['media_deferred'] = $result['field_sync']['media_planned']
                     - $result['field_sync']['media_refreshed'] - $result['field_sync']['media_failed'];
@@ -471,7 +527,8 @@ final class SyncService
             }
 
             if ($result['failed'] > 0 || $result['applied']['held_existing_unmanaged'] > 0
-                || $result['applied']['held_unknown'] > 0) {
+                || $result['applied']['held_unknown'] > 0
+                || ($detailFirst && $result['applied']['held_race'] > 0)) {
                 $result['status'] = 'partial';
             }
             if ($targetHashes !== null) {
@@ -491,9 +548,9 @@ final class SyncService
                 // each lane's last completed action; the triggering action and
                 // every unattempted suffix remain eligible on the next run.
                 'cursor' => $persistedCursor,
-                'priority_cursor' => $persistedPriorityCursor,
+                'priority_cursor' => $detailFirst ? $state['priority_cursor'] : $persistedPriorityCursor,
                 'categories' => $mapping,
-                'catalog_hash' => $this->catalogHash($catalog),
+                'catalog_hash' => $detailFirst && $catalog === [] ? $state['catalog_hash'] : $this->catalogHash($catalog),
                 'last_run' => Date::current(),
                 'last_result' => [
                     'status' => $result['status'],
@@ -514,6 +571,120 @@ final class SyncService
         } finally {
             $lock->release();
         }
+    }
+
+    /** Reuse the complete-catalog fuse, but never the transaction rotation cursor. */
+    private function inspectCatalog(Shared $source, Options $options, StateStore $store, array &$control,
+        RemoteItem $normalizer, array &$prepared, array &$result, int $limit, array &$catalog,
+        array &$appliedCodes): void
+    {
+        $this->phase = 'catalog';
+        try {
+            $this->budget->checkpoint();
+            SourceIdentity::lockAndVerify($source);
+            $control['last_attempt_at'] = time();
+            $store->writeCatalogControl((int)$source->id, $control);
+            $compact = (int)$source->type === 0 && (new PlannedCategoryMapper())->hasMirrorMapping((int)$source->id);
+            $planner = new CatalogPlanner();
+            $snapshot = $compact
+                ? (new UpstreamCategoryTree())->flatten($this->gateway->categoryTree($source))
+                : $planner->flatten($this->gateway->items($source), (int)$source->type === 0);
+            $this->budget->checkpoint();
+            SourceIdentity::lockAndVerify($source);
+            if ($snapshot === []) throw new RuntimeException('完整目录为空，巡检未确认');
+            $catalog = $snapshot;
+            $local = $this->localMap((int)$source->id);
+            if (!$options->syncs('inventory')) {
+                foreach ($local as &$row) $row['inventory_sync'] = 0;
+                unset($row);
+            }
+            $plan = $planner->planInspection($catalog, $local, $control['cursor'], $options, $limit);
+            $result['catalog_total'] = count($catalog);
+            $result['catalog_unknown'] = count(array_filter($catalog, static fn(array $item): bool => $item['stock'] === null));
+            $result['mass_zero_fuse'] = $plan['fuse'];
+            $result['mass_zero_ratio'] = $plan['fuse_ratio'];
+            // Timestamp denotes the start of the last successfully validated request.
+            $control['last_success_at'] = $control['last_attempt_at'];
+            $store->writeCatalogControl((int)$source->id, $control);
+            foreach ($plan['actions'] as $action) {
+                $this->budget->checkpoint();
+                $code = $action['code'];
+                $type = $action['type'];
+                if ($type === 'zero') {
+                    $result['planned']['zero']++;
+                    $this->zeroStock($source, $code, $options);
+                    $result['applied']['zero']++;
+                } elseif (in_array($type, ['hold_zero', 'held_unknown'], true)) {
+                    $result['planned'][$type]++;
+                    if ($type === 'held_unknown') $result['applied']['held_unknown']++;
+                    $result['status'] = 'partial';
+                } elseif ($type === 'sync' && (int)$local[$code]['stock'] <= 0
+                    && (int)$local[$code]['api_status'] === 1 && (int)$local[$code]['status'] === 1
+                    && (int)$local[$code]['inventory_sync'] === 1 && $options->syncs('inventory')) {
+                    // A previously fetched snapshot cannot undo a later concurrent zero.
+                    if (isset($prepared[$code])) {
+                        $result['status'] = 'partial';
+                    } else {
+                        $restore = $this->fieldOptions($options, ['inventory']);
+                        $coverFailed = false;
+                        $result['planned']['sync']++;
+                        try {
+                            $outcome = $this->syncExisting($source, $code, $normalizer, $restore, $coverFailed,
+                                null, true, true, $prepared[$code], $restore, 'catalog', true);
+                        } catch (RemoteItemDataInvalid | UpstreamFailure $exception) {
+                            // A bad item's detail must not starve later inspection entries.
+                            // Budget, identity, database and state failures still stop the pass.
+                            SourceIdentity::lockAndVerify($source);
+                            $result['failed']++;
+                            $result['status'] = 'partial';
+                            $diagnostic = $exception instanceof UpstreamFailure ? $exception->diagnostics : null;
+                            $this->recordError($result, $code, $this->errorMessage($exception), $diagnostic);
+                            $outcome = 'inspection_failed';
+                        }
+                        if ($outcome === 'synced') {
+                            if (!isset($appliedCodes[$code])) $result['applied']['sync']++;
+                            $appliedCodes[$code] = true;
+                            $result['field_sync']['noncover_saved']++;
+                        } else {
+                            if (in_array($outcome, ['held_unknown', 'held_race'], true)) $result['applied'][$outcome]++;
+                            $result['status'] = 'partial';
+                        }
+                    }
+                }
+                $control['cursor'] = $code;
+                $store->writeCatalogControl((int)$source->id, $control);
+            }
+            $result['catalog_status'] = 'inspected';
+        } catch (\Throwable $exception) {
+            $result['status'] = 'partial';
+            $result['catalog_status'] = 'failed';
+            if ($exception instanceof BudgetExceeded) $result['budget_scope'] = $exception->scope;
+            $diagnostic = $exception instanceof UpstreamFailure ? $exception->diagnostics
+                : ($exception instanceof BudgetExceeded ? $exception->safeDiagnostics : null);
+            if ($diagnostic !== null) $result['catalog_diagnostic'] = $diagnostic;
+            $this->recordError($result, null, '目录巡检未完成：已提交的详情更新保留，未确认商品不清零或恢复', $diagnostic);
+        }
+    }
+
+    private function fieldOptions(Options $options, array $fields): Options
+    {
+        $selection = clone $options;
+        foreach (Options::SYNC_FIELDS as $field) {
+            $selection->syncFields[$field] = $options->syncs($field) && in_array($field, $fields, true);
+        }
+        return $selection;
+    }
+
+    private function selectedFields(Commodity $row, Options $options): array
+    {
+        return array_values(array_filter(Options::SYNC_FIELDS, static function (string $field) use ($row, $options): bool {
+            if (!$options->syncs($field)) return false;
+            return match ($field) {
+                'inventory' => (int)$row->inventory_sync === 1,
+                'price' => (int)$row->shared_amount_sync === 1,
+                default => (int)$row->shared_config_sync === 1,
+            };
+        }));
     }
 
     /** Resolve against complete local and remote sets before any detail or save. */
@@ -593,7 +764,7 @@ final class SyncService
             ->limit(self::MAX_LOCAL_ITEMS + 1)
             ->get([
                 'id', 'code', 'shared_code', 'status', 'stock', 'shared_sync',
-                'shared_premium_type', 'inventory_sync', 'shared_amount_sync', 'shared_config_sync',
+                'shared_premium_type', 'inventory_sync', 'shared_amount_sync', 'shared_config_sync', 'api_status',
             ]);
         if ($rows->count() > self::MAX_LOCAL_ITEMS) {
             throw new RuntimeException('本地同一货源商品超过 10000 条安全上限');
@@ -610,6 +781,7 @@ final class SyncService
             $map[$code] = [
                 'id' => (int)$row->id,
                 'status' => (int)$row->status,
+                'api_status' => (int)$row->api_status,
                 'stock' => (int)$row->stock,
                 'managed' => (int)$row->shared_sync === 0
                     && preg_match('/^PKS1[A-F0-9]{20}$/D', (string)$row->code) === 1
@@ -663,6 +835,9 @@ final class SyncService
         bool $allowManualNullStock = false,
         bool $deferCover = false,
         ?array &$prepared = null,
+        ?Options $detailOptions = null,
+        ?string $fieldGroup = null,
+        bool $catalogConfirmed = false,
     ): string
     {
         if ($deferCover && isset($prepared['error'])) throw $prepared['error'];
@@ -671,10 +846,12 @@ final class SyncService
             ->where('shared_id', (int)$source->id)
             ->where('shared_code', $code)
             ->first(['id', 'code', 'shared_sync', 'shared_premium_type', 'shared_premium',
-                'shared_amount_sync', 'shared_config_sync', 'inventory_sync']);
+                'shared_amount_sync', 'shared_config_sync', 'inventory_sync', 'stock', 'api_status', 'status']);
         if (!$existing) {
             throw new RuntimeException('本地商品不存在');
         }
+        if ($detailOptions !== null && ((int)$existing->api_status !== 1 || (int)$existing->status !== 1
+            || (!$catalogConfirmed && (int)$existing->stock <= 0))) return 'held_unknown';
         if ($deferCover && isset($prepared['id']) && $prepared['id'] !== (int)$existing->id) {
             throw new RuntimeException('本地商品身份在分层同步期间已变更');
         }
@@ -685,17 +862,20 @@ final class SyncService
         if ($options->syncFields !== null && !$this->hasSelectedField($existing, $options)) {
             return 'skipped_selection';
         }
-        $coverAllowed = $options->syncs('cover') && (int)$existing->shared_config_sync === 1;
+        $coverAllowed = ($detailOptions ?? $options)->syncs('cover') && (int)$existing->shared_config_sync === 1;
         $coverLoaded = $coverAllowed && !$deferCover;
         try {
             if ($deferCover && isset($prepared['held_unknown'])) return 'held_unknown';
             if ($deferCover && isset($prepared['item'])) {
                 $item = $prepared['item'];
+                $detailFields = $prepared['detail_fields'] ?? null;
                 $fullConfigValid = $prepared['full_config_valid'];
                 $coverAllowed = $prepared['cover_allowed'];
             } else {
                 $this->sourcePolicy->assertSafe($source);
-                $remote = $this->gateway->item($source, $code);
+                $remote = $this->gateway->item($source, $code, $detailOptions !== null);
+                $detailFields = $detailOptions === null ? null : $this->selectedFields($existing, $detailOptions);
+                if ($detailFields !== null) RemoteItem::assertDetailFields($remote, $code, $detailFields);
                 // Hold the whole item before normalization or either write phase.
                 if ($allowManualNullStock && CatalogPlanner::isManualNullStock($remote)) {
                     if ($deferCover) $prepared = ['id' => (int)$existing->id, 'held_unknown' => true];
@@ -709,11 +889,12 @@ final class SyncService
                     try { $coverValue = $normalizer->coverValue($remote['cover'] ?? ''); }
                     catch (RemoteCoverUnavailable $exception) { $coverError = $exception; }
                 }
-                $item = $normalizer->normalize($source, $remote, $code, $coverLoaded, true);
+                $item = $normalizer->normalize($source, $remote, $code, $coverLoaded, true, $detailFields);
                 if ($deferCover) {
                     $prepared = ['id' => (int)$existing->id, 'item' => $item,
                         'full_config_valid' => $fullConfigValid, 'cover_allowed' => $coverAllowed,
-                        'cover_value' => $coverValue, 'cover_error' => $coverError, 'noncover_applied' => false];
+                        'cover_value' => $coverValue, 'cover_error' => $coverError, 'noncover_applied' => false,
+                        'detail_fields' => $detailFields];
                 }
             }
         } catch (\Throwable $exception) {
@@ -725,7 +906,7 @@ final class SyncService
 
         try {
             $outcome = DB::transaction(function () use ($source, $code, $existing, $item, $options, $coverAllowed,
-                $fullConfigValid, $target, $deferCover, &$prepared): string {
+                $fullConfigValid, $target, $deferCover, $detailOptions, $detailFields, $fieldGroup, $catalogConfirmed, &$prepared): string {
                 SourceIdentity::lockAndVerify($source);
                 $commodity = Commodity::query()
                     ->whereKey((int)$existing->id)
@@ -736,6 +917,11 @@ final class SyncService
                     ->first();
                 if (!$commodity) {
                     throw new RuntimeException('本地商品在同步期间已变更');
+                }
+                if ($detailOptions !== null && ((int)$commodity->api_status !== 1 || (int)$commodity->status !== 1
+                    || (!$catalogConfirmed && (int)$commodity->stock <= 0))) return 'held_unknown';
+                if ($detailOptions !== null && array_diff($this->selectedFields($commodity, $detailOptions), $detailFields ?? []) !== []) {
+                    throw new RemoteItemDataInvalid('商品字段授权在详情读取期间扩大，本件未写入');
                 }
                 if ($target !== null) {
                     $this->assertTargetUnchanged($commodity, $target);
@@ -751,7 +937,8 @@ final class SyncService
 
                 // The catalog snapshot said this item was in stock. A zero detail
                 // response is held without any write so it cannot bypass the fuse.
-                if ($options->syncs('inventory') && (int)$commodity->inventory_sync === 1 && (int)$item['stock'] <= 0) {
+                if (($detailOptions ?? $options)->syncs('inventory') && (int)$commodity->inventory_sync === 1
+                    && (int)($item['stock'] ?? 0) <= 0) {
                     return 'held_race';
                 }
 
@@ -766,7 +953,8 @@ final class SyncService
                     throw new RuntimeException('本地商品不是 PikaSupplySync 导入，插件拒绝接管');
                 }
                 // A second lane may reuse data, never replay an already applied non-cover snapshot.
-                if ($deferCover && ($prepared['noncover_applied'] ?? false)) return 'reused_noncover';
+                if ($deferCover && ($fieldGroup === null ? ($prepared['noncover_applied'] ?? false)
+                    : ($prepared['applied_groups'][$fieldGroup] ?? false))) return 'reused_noncover';
                 $amountSync = (int)$commodity->shared_amount_sync === 1;
                 $configSync = (int)$commodity->shared_config_sync === 1;
                 if ($options->syncFields !== null) {
@@ -781,8 +969,8 @@ final class SyncService
                 if ($amountSync || $configSync) {
                     $prices = $this->prices->adjustPrice(
                         $item['config'],
-                        (string)$item['price'],
-                        (string)$item['user_price'],
+                        (string)($item['price'] ?? 0),
+                        (string)($item['user_price'] ?? 0),
                         $premiumType,
                         (float)$commodity->shared_premium,
                     );
@@ -846,6 +1034,9 @@ final class SyncService
             throw $exception;
         }
         if ($deferCover && in_array($outcome, ['synced', 'partial_selection'], true)) $prepared['noncover_applied'] = true;
+        if ($deferCover && $fieldGroup !== null && in_array($outcome, ['synced', 'partial_selection'], true)) {
+            $prepared['applied_groups'][$fieldGroup] = true;
+        }
         return $outcome;
     }
 
@@ -1201,6 +1392,7 @@ final class SyncService
     private function errorMessage(\Throwable $exception): string
     {
         if ($exception instanceof BudgetExceeded) return $exception->isSource() ? '单货源预算已耗尽' : '本轮预算已耗尽';
+        if ($exception instanceof RemoteItemDataInvalid) return '远端商品详情无效';
         if (!$exception instanceof UpstreamFailure) return '同步失败，原因未分类';
         return match ($exception->diagnostics['category']) {
             'business' => '远端返回业务失败',

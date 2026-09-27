@@ -191,26 +191,52 @@ final class CatalogPlanner
         ];
     }
 
+    /** Plan only existing identities; no synthetic upstream stock or visibility. */
+    public function planLocal(array $local, string $cursor, Options $options, array $schedule): array
+    {
+        $work = array_map('strval', array_keys($local));
+        sort($work, SORT_STRING);
+        return $this->scheduledPlan([], $local, $work, [], $cursor, $options, '', $schedule,
+            false, false, 0.0, true);
+    }
+
+    /** The fuse always sees the full catalog and local pool, even for a bounded scan. */
+    public function planInspection(array $catalog, array $local, string $cursor, Options $options, int $limit): array
+    {
+        $eligible = array_filter($local, static fn(array $row): bool => $options->syncs('inventory')
+            && ($row['managed'] ?? true) && (int)($row['inventory_sync'] ?? 1) === 1);
+        $codes = array_map('strval', array_keys($eligible));
+        sort($codes, SORT_STRING);
+        $selected = $this->batch($codes, $cursor, $limit);
+        if ($selected === []) return ['actions' => [], 'fuse' => false, 'fuse_ratio' => 0.0];
+        return $this->plan($catalog, $local, $cursor, $options, '', $selected);
+    }
+
     private function scheduledPlan(array $catalog, array $local, array $work, array $priority,
         string $cursor, Options $options, string $priorityCursor, array $schedule,
-        bool $fuse, bool $explicitZeroFuse, float $ratio): array
+        bool $fuse, bool $explicitZeroFuse, float $ratio, bool $detailFirst = false): array
     {
         $priorityMap = $options->batchLimit > 3 ? array_fill_keys($priority, true) : [];
         $lanes = ['priority' => [], 'normal' => [], 'media' => []];
         $types = [];
         foreach ($work as $code) {
             $row = $local[$code] ?? null;
-            $type = $this->actionType($catalog[$code] ?? null, $row, $options, $fuse, $explicitZeroFuse);
+            $type = $detailFirst
+                ? (($row['managed'] ?? false) ? 'sync' : null)
+                : $this->actionType($catalog[$code] ?? null, $row, $options, $fuse, $explicitZeroFuse);
             if ($row === null || $type === null) continue;
+            if ($detailFirst && ((int)($row['stock'] ?? 0) <= 0
+                || (int)($row['api_status'] ?? 0) !== 1 || (int)($row['status'] ?? 0) !== 1)) continue;
             $types[$code] = $type;
             // A cover-only item needs one media action, without a second detail
             // request or housekeeping write through the ordinary rotation.
-            if ($type !== 'sync' || $this->hasNonCoverField($row, $options)) {
+            if ($type !== 'sync' || ($detailFirst ? $this->hasTradeField($row, $options) : $this->hasNonCoverField($row, $options))) {
                 $lanes[isset($priorityMap[$code]) ? 'priority' : 'normal'][] = $code;
             }
             // Media gets its own pass even when this code also needs stock work.
             // Reuse the action classification so unknown/zero holds stay closed.
-            if ($type === 'sync' && $options->syncs('cover') && (int)($row['shared_config_sync'] ?? 0) === 1) {
+            if ($type === 'sync' && (int)($row['shared_config_sync'] ?? 0) === 1
+                && ($options->syncs('cover') || ($detailFirst && ($options->syncs('name') || $options->syncs('description'))))) {
                 $lanes['media'][] = $code;
             }
         }
@@ -233,13 +259,16 @@ final class CatalogPlanner
             for ($skipped = 0; $skipped < count(self::OPPORTUNITIES); $skipped++) {
                 $lane = self::OPPORTUNITIES[$slot];
                 $slot = ($slot + 1) % count(self::OPPORTUNITIES);
+                if ($detailFirst && $lane !== 'media' && !isset($lanes[$lane][$offsets[$lane]])) {
+                    $lane = $lane === 'priority' ? 'normal' : 'priority';
+                }
                 if (!isset($lanes[$lane][$offsets[$lane]])) continue;
                 $code = $lanes[$lane][$offsets[$lane]++];
                 $type = $types[$code];
                 $actions[] = ['type' => $type, 'code' => $code, 'lane' => $lane, 'next_slot' => $slot];
                 $counts[$type]++;
                 if ($lane === 'media') {
-                    $mediaPlanned++;
+                    if (!$detailFirst || $options->syncs('cover')) $mediaPlanned++;
                 } else {
                     $tradePlanned++;
                     if ($lane === 'priority') $priorityCursor = $code;
@@ -268,6 +297,13 @@ final class CatalogPlanner
             || ((int)($row['inventory_sync'] ?? 1) === 1 && $options->syncs('inventory'))
             || ((int)($row['shared_config_sync'] ?? 0) === 1
                 && ($options->syncs('name') || $options->syncs('description') || $options->syncs('options')));
+    }
+
+    private function hasTradeField(array $row, Options $options): bool
+    {
+        return ((int)($row['shared_amount_sync'] ?? 0) === 1 && $options->syncs('price'))
+            || ((int)($row['inventory_sync'] ?? 1) === 1 && $options->syncs('inventory'))
+            || ((int)($row['shared_config_sync'] ?? 0) === 1 && $options->syncs('options'));
     }
 
     private function actionType(?array $remote, ?array $row, Options $options,

@@ -48,6 +48,19 @@ final class ConfigStore
 
         AtomicJson::update(self::path($id), ['schema' => 1, 'values' => []], static function (array $envelope) use ($id, $syncKeys, $settings, $input): array {
             self::validateEnvelope($envelope);
+            if ($id === 'PikaSupplySync') {
+                // Inspect raw values before generic number normalization can
+                // turn a float or exponent string into an apparent integer.
+                foreach (['catalog_interval_seconds', 'catalog_max_age_seconds'] as $key) {
+                    $raw = array_key_exists($key, $input) ? $input[$key]
+                        : (array_key_exists($key, $envelope['values']) ? $envelope['values'][$key] : 0);
+                    if ((!is_int($raw) && !is_string($raw))
+                        || preg_match('/^\d+$/D', trim((string)$raw)) !== 1
+                        || (float)$raw < 0 || (float)$raw > 604800) {
+                        throw new \RuntimeException('目录试验时间必须是0至604800的整数');
+                    }
+                }
+            }
             $current = self::withDefaults($settings, $envelope['values']);
             $next = [];
             foreach ($settings as $setting) {
@@ -66,6 +79,16 @@ final class ConfigStore
                 $selected = count(array_intersect($syncKeys, array_keys($next)));
                 if ($selected !== 0 && $selected !== count($syncKeys)) {
                     throw new \RuntimeException('请完整保存六项同步选择');
+                }
+                $catalogInterval = $next['catalog_interval_seconds'] ?? 0;
+                $catalogMaxAge = $next['catalog_max_age_seconds'] ?? 0;
+                if ($catalogInterval !== 0 || $catalogMaxAge !== 0) {
+                    if ($catalogInterval <= 0 || $catalogMaxAge < $catalogInterval
+                        || ($next['mode'] ?? 'basic') !== 'basic'
+                        || $selected !== count($syncKeys)
+                        || !is_int($next['batch_limit']) || $next['batch_limit'] < 2) {
+                        throw new \RuntimeException('详情优先需要 basic、六项明确选择、每批至少2件及成对的有效目录时间，最大陈旧时间不能短于巡检间隔');
+                    }
                 }
                 if (($next['follow_upstream_config'] ?? false) === true) {
                     if ($selected !== count($syncKeys)) {

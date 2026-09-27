@@ -31,8 +31,11 @@ final class RemoteItem
 
     /** @return array<string,mixed> */
     public function normalize(Shared $source, array $item, string $requestedCode,
-        bool $localizeCover = true, bool $refreshCover = false): array
+        bool $localizeCover = true, bool $refreshCover = false, ?array $fields = null): array
     {
+        if ($fields !== null) {
+            return $this->normalizeSelected($source, $item, $requestedCode, $localizeCover, $refreshCover, $fields);
+        }
         $requestedCode = $this->code($requestedCode);
         if (array_key_exists('code', $item)) {
             $returnedCode = $this->code($item['code']);
@@ -89,6 +92,89 @@ final class RemoteItem
             'price' => $this->amount($item['price'] ?? 0, 'price'),
             'user_price' => $this->amount($item['user_price'] ?? 0, 'user_price'),
         ] + ($coverUnavailable ? ['cover_unavailable' => true] : []);
+    }
+
+    /** Reject absent selected data before any legacy default can invent it. */
+    public static function assertDetailFields(array $remote, string $code, array $fields): void
+    {
+        $identity = $remote['code'] ?? null;
+        if ((!is_string($identity) && !is_int($identity))
+            || $code === '' || strlen($code) > 64 || preg_match('/[\x00-\x20\x7F]/', $code)
+            || !hash_equals($code, (string)$identity)) {
+            throw new RemoteItemDataInvalid('远端商品详情缺少匹配的明确编号');
+        }
+        $requirements = [
+            'price' => ['price', 'user_price', 'config', 'draft_premium'],
+            'inventory' => ['stock'],
+            'options' => ['config', 'widget', 'draft_status'],
+            'name' => ['name'], 'description' => ['description'], 'cover' => ['cover'],
+        ];
+        if (!array_is_list($fields)) {
+            throw new RemoteItemDataInvalid('远端商品详情字段选择不正确');
+        }
+        foreach ($fields as $field) {
+            if (!is_string($field) || !array_key_exists($field, $requirements)) {
+                throw new RemoteItemDataInvalid('远端商品详情字段选择不正确');
+            }
+            foreach ($requirements[$field] as $key) {
+                if (!array_key_exists($key, $remote) || $remote[$key] === null) {
+                    throw new RemoteItemDataInvalid('远端商品详情缺少所选字段');
+                }
+                $value = $remote[$key];
+                $valid = match ($key) {
+                    'price', 'user_price', 'draft_premium' => is_numeric($value)
+                        && is_finite((float)$value) && (float)$value >= 0 && (float)$value <= 99999999.99,
+                    'stock', 'draft_status' => (is_int($value)
+                        || (is_float($value) && is_finite($value) && floor($value) === $value)
+                        || (is_string($value) && preg_match('/^\d+$/D', $value)))
+                        && (float)$value >= 0 && (float)$value <= ($key === 'stock' ? 2147483647 : 1),
+                    'config', 'widget' => is_array($value) || is_string($value),
+                    default => is_string($value),
+                };
+                if (!$valid) {
+                    throw new RemoteItemDataInvalid('远端商品详情所选字段格式不正确');
+                }
+            }
+        }
+    }
+
+    /** Only selected groups are returned; unselected remote values are never defaulted or processed. */
+    private function normalizeSelected(Shared $source, array $item, string $code,
+        bool $localizeCover, bool $refreshCover, array $fields): array
+    {
+        self::assertDetailFields($item, $code, $fields);
+        $selected = array_fill_keys($fields, true);
+        $result = ['code' => $code];
+        if (isset($selected['price'])) {
+            $result['price'] = $this->amount($item['price'], 'price');
+            $result['user_price'] = $this->amount($item['user_price'], 'user_price');
+            $result['draft_premium'] = $this->amount($item['draft_premium'], 'draft_premium');
+        }
+        if (isset($selected['price']) || isset($selected['options'])) {
+            $result['config'] = $this->config($item['config']);
+        }
+        if (isset($selected['inventory'])) {
+            $result['stock'] = $this->integer($item['stock'], 0, 2147483647, 'stock');
+        }
+        if (isset($selected['options'])) {
+            $result['draft_status'] = $this->integer($item['draft_status'], 0, 1, 'draft_status');
+            $result['widget'] = $this->widget($item['widget']);
+        }
+        if (isset($selected['name'])) {
+            $result['name'] = $this->plain($item['name'], 255, '商品名称', true, true);
+        }
+        if (isset($selected['description'])) {
+            $result['description'] = $this->description($item['description']);
+        }
+        if (isset($selected['cover']) && $localizeCover) {
+            try {
+                $result['cover'] = $this->cover($source, $item['cover'], $refreshCover);
+            } catch (RemoteCoverUnavailable $exception) {
+                if (!$refreshCover) throw $exception;
+                $result['cover_unavailable'] = true;
+            }
+        }
+        return $result;
     }
 
     private function description(mixed $value): string

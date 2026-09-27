@@ -6,6 +6,23 @@ namespace Pika\LocalExtensions\Manager {
     final class PathGuard
     {
         public static string $root = '';
+        public static string $site = '';
+
+        public static function siteRoot(): string
+        {
+            return self::$site;
+        }
+
+        public static function immutableFileWithin(string $root, string $file): string
+        {
+            $realRoot = realpath($root);
+            $realFile = realpath($file);
+            if (!is_string($realRoot) || !is_string($realFile) || is_link($file)
+                || !is_file($realFile) || !str_starts_with($realFile, $realRoot . '/')) {
+                throw new \RuntimeException('invalid field-selection registry fixture path');
+            }
+            return $realFile;
+        }
 
         public static function extensionId(string $id): string
         {
@@ -45,24 +62,11 @@ namespace Pika\LocalExtensions\Manager {
         }
     }
 
-    final class Registry
-    {
-        public static array $supply = [];
-
-        public static function extension(string $id): array
-        {
-            if ($id !== 'PikaSupplySync' || self::$supply === []) {
-                throw new \RuntimeException('unexpected field-selection fixture extension');
-            }
-            return self::$supply;
-        }
-    }
 }
 
 namespace {
     use Pika\LocalExtensions\Manager\AtomicJson;
     use Pika\LocalExtensions\Manager\ConfigStore;
-    use Pika\LocalExtensions\Manager\ManifestValidator;
     use Pika\LocalExtensions\Manager\PathGuard;
     use Pika\LocalExtensions\Manager\Registry;
     use Pika\LocalExtensions\PikaSupplySync\Service\Options;
@@ -104,6 +108,7 @@ namespace {
     try {
         require dirname(__DIR__) . '/manager/site/local-extensions/src/AtomicJson.php';
         require dirname(__DIR__) . '/manager/site/local-extensions/src/ManifestValidator.php';
+        require dirname(__DIR__) . '/manager/site/local-extensions/src/Registry.php';
         require dirname(__DIR__) . '/manager/site/local-extensions/src/ConfigStore.php';
         require dirname(__DIR__) . '/manager/site/local-extensions/src/StateStore.php';
         require dirname(__DIR__) . '/extensions/PikaSupplySync/Service/Options.php';
@@ -111,21 +116,41 @@ namespace {
         $manifest = json_decode((string)file_get_contents(
             dirname(__DIR__) . '/extensions/PikaSupplySync/local-extension.json',
         ), true, 32, JSON_THROW_ON_ERROR);
-        Registry::$supply = ManifestValidator::plugin($manifest, 'PikaSupplySync');
+        PathGuard::$site = $fixture . '/site';
+        $manifestRoot = PathGuard::$site . '/local-extensions/extensions/PikaSupplySync';
+        fieldExpect(mkdir($manifestRoot, 0o700, true), 'unable to create real registry fixture');
+        $manifestBytes = json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        fieldExpect(file_put_contents($manifestRoot . '/local-extension.json', $manifestBytes) === strlen($manifestBytes),
+            'unable to stage current manifest in real registry fixture');
+        $registryBytes = json_encode(['schema'=>1, 'extensions'=>[[
+            'id'=>'PikaSupplySync', 'manifest'=>'extensions/PikaSupplySync/local-extension.json',
+            'manifest_sha256'=>hash('sha256', $manifestBytes),
+        ]], 'themes'=>[]], JSON_THROW_ON_ERROR);
+        fieldExpect(file_put_contents(PathGuard::$site . '/local-extensions/registry.json', $registryBytes) === strlen($registryBytes),
+            'unable to stage real registry fixture');
+        $registered = Registry::extension('PikaSupplySync');
         $fields = ['name', 'cover', 'description', 'price', 'inventory', 'options'];
         $keys = array_map(static fn(string $field): string => 'sync_' . $field, $fields);
         $keyMap = array_fill_keys($keys, true);
         fieldExpect(Options::SYNC_FIELDS === $fields, 'Options and the six-field contract disagree');
-        foreach (Registry::$supply['settings'] as $setting) {
+        foreach ($registered['settings'] as $setting) {
             if (isset($keyMap[$setting['key']])) {
                 fieldExpect($setting['type'] === 'checkbox' && !array_key_exists('default', $setting),
                     'an optional sync field gained an implicit checkbox default');
             }
         }
-        $followSetting = array_column(Registry::$supply['settings'], null, 'key')['follow_upstream_config'];
-        $followSourceSetting = array_column(Registry::$supply['settings'], null, 'key')['follow_upstream_config_source_ids'];
+        $settings = array_column($registered['settings'], null, 'key');
+        $followSetting = $settings['follow_upstream_config'];
+        $followSourceSetting = $settings['follow_upstream_config_source_ids'];
         $followDefaults = ['follow_upstream_config_source_ids'=>'', 'follow_upstream_config'=>false];
-        fieldExpect($manifest['version'] === '1.1.20', 'field-selection fixture requires the current SupplySync version');
+        $catalogDefaults = ['catalog_interval_seconds'=>0, 'catalog_max_age_seconds'=>0];
+        $legacyDefaults = $followDefaults + $catalogDefaults;
+        foreach (array_keys($catalogDefaults) as $key) {
+            fieldExpect($settings[$key]['type'] === 'number' && $settings[$key]['default'] === 0
+                && (int)$settings[$key]['min'] === 0 && (int)$settings[$key]['max'] === 604800,
+                'catalog controls must use existing number settings and remain disabled by default');
+        }
+        fieldExpect($manifest['version'] === '1.1.21', 'field-selection fixture requires the current SupplySync version');
         fieldExpect($followSetting['type'] === 'checkbox'
             && $followSetting['default'] === false, 'config following must be an independent opt-in checkbox');
         fieldExpect($followSourceSetting['type'] === 'text' && $followSourceSetting['default'] === '',
@@ -143,15 +168,17 @@ namespace {
         AtomicJson::update($path, [], static fn(array $state): array => ['schema'=>1, 'values'=>$legacy]);
         $legacyBytes = file_get_contents($path);
         $legacyView = ConfigStore::get('PikaSupplySync');
-        fieldExpect(array_diff_key($legacyView, $followDefaults) === $legacy
+        fieldExpect(array_diff_key($legacyView, $legacyDefaults) === $legacy
             && array_intersect_key($legacyView, $followDefaults) === $followDefaults
+            && array_intersect_key($legacyView, $catalogDefaults) === $catalogDefaults
             && ConfigStore::publicView('PikaSupplySync')['values'] === $legacyView
             && file_get_contents($path) === $legacyBytes,
             'reading old config backfilled sync choices or changed its durable bytes');
         ConfigStore::save('PikaSupplySync', ['premium_percent'=>12]);
         $oldClient = ConfigStore::get('PikaSupplySync');
-        fieldExpect(array_diff_key($oldClient, $followDefaults) === array_replace($legacy, ['premium_percent'=>12])
+        fieldExpect(array_diff_key($oldClient, $legacyDefaults) === array_replace($legacy, ['premium_percent'=>12])
             && array_intersect_key($oldClient, $followDefaults) === $followDefaults
+            && array_intersect_key($oldClient, $catalogDefaults) === $catalogDefaults
             && array_intersect_key(AtomicJson::read($path, [])['values'], $keyMap) === [],
             'an old-client save backfilled absent sync choices or changed unrelated settings');
 
@@ -358,6 +385,109 @@ namespace {
             'an override enabled a disabled config-follow policy');
         fieldReject(static fn() => Options::fromArray($allTrue + ['source_ids'=>'202', 'follow_upstream_config'=>true]),
             InvalidArgumentException::class, 'Options inferred a missing follow list from execution source IDs');
+
+        // Exercise the actual manifest -> Registry -> ConfigStore -> Options path.
+        $previousRoot = PathGuard::$root;
+        PathGuard::$root = $fixture . '/catalog-policy';
+        fieldExpect(mkdir(PathGuard::$root, 0o700), 'unable to create catalog-policy fixture root');
+        $catalogPath = PathGuard::$root . '/config/PikaSupplySync.json';
+        foreach ([$legacy, [], $catalogDefaults] as $offConfig) {
+            $off = Options::fromArray($offConfig);
+            fieldExpect(!$off->detailFirst() && $off->catalogIntervalSeconds === null && $off->catalogMaxAgeSeconds === null,
+                'missing or zero catalog times enabled a new policy');
+        }
+        $catalogView = ConfigStore::get('PikaSupplySync');
+        fieldExpect(array_intersect_key($catalogView, $catalogDefaults) === $catalogDefaults
+            && !Options::fromArray($catalogView)->detailFirst() && !file_exists($catalogPath),
+            'manifest defaults enabled or persisted an unconfigured catalog policy');
+        ConfigStore::save('PikaSupplySync', $catalogDefaults);
+        fieldExpect(!Options::fromArray(ConfigStore::get('PikaSupplySync'))->detailFirst(),
+            'an explicit zero/zero save did not remain disabled');
+        $catalogOffBytes = file_get_contents($catalogPath);
+        foreach ([['catalog_interval_seconds'=>60], ['catalog_max_age_seconds'=>180],
+            ['catalog_interval_seconds'=>60, 'catalog_max_age_seconds'=>180]] as $input) {
+            fieldReject(static fn() => ConfigStore::save('PikaSupplySync', $input), RuntimeException::class,
+                'one-sided or selection-free catalog opt-in was saved');
+            fieldExpect(file_get_contents($catalogPath) === $catalogOffBytes,
+                'rejected first catalog opt-in changed durable config');
+        }
+        $catalogEnabled = $selection + ['mode'=>'basic', 'batch_limit'=>2,
+            'catalog_interval_seconds'=>60, 'catalog_max_age_seconds'=>180];
+        $invalidCatalogs = [
+            ['catalog_interval_seconds'=>0], ['catalog_max_age_seconds'=>0],
+            ['catalog_interval_seconds'=>60.0], ['catalog_max_age_seconds'=>180.0],
+            ['catalog_interval_seconds'=>'60.0'], ['catalog_max_age_seconds'=>'1.8e2'],
+            ['catalog_interval_seconds'=>null], ['catalog_max_age_seconds'=>false],
+            ['catalog_interval_seconds'=>[]], ['catalog_max_age_seconds'=>-1],
+            ['catalog_interval_seconds'=>604801], ['catalog_max_age_seconds'=>604801],
+            ['catalog_max_age_seconds'=>59], ['mode'=>'full'], ['batch_limit'=>1],
+        ];
+        foreach ($invalidCatalogs as $change) {
+            $input = array_replace($catalogEnabled, $change);
+            fieldReject(static fn() => ConfigStore::save('PikaSupplySync', $input), RuntimeException::class,
+                'invalid catalog policy was persisted');
+            fieldExpect(file_get_contents($catalogPath) === $catalogOffBytes,
+                'a rejected catalog combination changed durable bytes');
+            fieldReject(static fn() => Options::fromArray($input), InvalidArgumentException::class,
+                'Options accepted an invalid catalog policy');
+        }
+        ConfigStore::save('PikaSupplySync', array_replace($catalogEnabled,
+            ['catalog_interval_seconds'=>'60', 'catalog_max_age_seconds'=>'180', 'premium_percent'=>10]));
+        $catalogSaved = ConfigStore::get('PikaSupplySync');
+        $catalogOptions = Options::fromArray($catalogSaved);
+        fieldExpect($catalogOptions->detailFirst() && $catalogOptions->catalogIntervalSeconds === 60
+            && $catalogOptions->catalogMaxAgeSeconds === 180 && $catalogOptions->batchLimit === 2
+            && $catalogOptions->syncFields === array_combine($fields, array_values($selection)),
+            'saved catalog controls did not survive readback and Options parsing');
+        $catalogSavedBytes = file_get_contents($catalogPath);
+        fieldExpect(ConfigStore::publicView('PikaSupplySync')['values'] === $catalogSaved
+            && file_get_contents($catalogPath) === $catalogSavedBytes,
+            'public catalog-policy readback changed saved values or durable bytes');
+        ConfigStore::save('PikaSupplySync', ['premium_percent'=>20]);
+        $catalogPreserved = ConfigStore::get('PikaSupplySync');
+        fieldExpect($catalogPreserved['premium_percent'] === 20
+            && array_intersect_key($catalogPreserved, $catalogDefaults)
+                === ['catalog_interval_seconds'=>60, 'catalog_max_age_seconds'=>180]
+            && array_intersect_key($catalogPreserved, $keyMap) === $selection,
+            'saving another field erased catalog policy or six saved choices');
+        foreach ([[], $catalogDefaults] as $offConfig) {
+            fieldExpect(!Options::fromArray($offConfig + $selection,
+                ['catalog_interval_seconds'=>60, 'catalog_max_age_seconds'=>180])->detailFirst(),
+                'execution overrides enabled an unsaved catalog policy');
+        }
+        $overriddenCatalog = Options::fromArray($catalogSaved,
+            ['catalog_interval_seconds'=>1, 'catalog_max_age_seconds'=>604800, 'batch_limit'=>1]);
+        fieldExpect($overriddenCatalog->catalogIntervalSeconds === 60 && $overriddenCatalog->catalogMaxAgeSeconds === 180
+            && $overriddenCatalog->batchLimit === 1,
+            'overrides changed saved cadence or could not narrow a targeted execution batch');
+        fieldReject(static fn() => Options::fromArray(
+            ['catalog_interval_seconds'=>60, 'catalog_max_age_seconds'=>180], $selection),
+            InvalidArgumentException::class, 'execution overrides supplied unsaved six-field authorization');
+        fieldReject(static fn() => Options::fromArray(array_replace($catalogSaved, ['mode'=>'full']), ['mode'=>'basic']),
+            InvalidArgumentException::class, 'execution override enabled a policy invalid under its saved mode');
+        fieldReject(static fn() => Options::fromArray(array_replace($catalogSaved, ['batch_limit'=>1]), ['batch_limit'=>2]),
+            InvalidArgumentException::class, 'execution override enabled a policy invalid under its saved batch');
+        ConfigStore::save('PikaSupplySync', $allFalse);
+        $pausedCatalog = ConfigStore::get('PikaSupplySync');
+        fieldExpect(Options::fromArray($pausedCatalog)->detailFirst()
+            && array_intersect_key($pausedCatalog, $keyMap) === $allFalse,
+            'explicit all-false choices were erased or incorrectly made the saved policy invalid');
+        ConfigStore::save('PikaSupplySync', ['catalog_interval_seconds'=>604800, 'catalog_max_age_seconds'=>604800]);
+        $boundaryCatalog = Options::fromArray(ConfigStore::get('PikaSupplySync'));
+        fieldExpect($boundaryCatalog->catalogIntervalSeconds === 604800 && $boundaryCatalog->catalogMaxAgeSeconds === 604800,
+            'the explicitly chosen upper-bound pair did not survive persistence');
+        ConfigStore::save('PikaSupplySync', $catalogDefaults + ['mode'=>'full', 'batch_limit'=>1]);
+        $rolledBackCatalog = ConfigStore::get('PikaSupplySync');
+        fieldExpect(!Options::fromArray($rolledBackCatalog)->detailFirst()
+            && array_intersect_key($rolledBackCatalog, $catalogDefaults) === $catalogDefaults
+            && array_intersect_key($rolledBackCatalog, $keyMap) === $allFalse
+            && $rolledBackCatalog['premium_percent'] === 20,
+            'zero/zero rollback did not preserve unrelated settings or restore legacy mode/batch flexibility');
+        ConfigStore::save('PikaSupplySync', ['source_ids'=>'202']);
+        fieldExpect(!Options::fromArray(ConfigStore::get('PikaSupplySync'))->detailFirst(),
+            'saving another field re-enabled a rolled-back catalog policy');
+        PathGuard::$root = $previousRoot;
+
         $enabledPath = PathGuard::stateRoot() . '/state.json';
         AtomicJson::update($enabledPath, [], static fn(): array => ['schema' => 1, 'extensions' => [
             'PikaSupplySync' => ['enabled' => true, 'updated_at' => '2026-09-22T00:00:00Z'],
@@ -385,7 +515,7 @@ namespace {
         $ordinaryOverride = Options::fromArray(ConfigStore::get('PikaSupplySync'), $cliOverrides);
         fieldExpect($ordinaryOverride->mode === 'basic' && $ordinaryOverride->batchLimit === 20,
             'target-specific authorization checks changed ordinary CLI override semantics');
-        fwrite(STDOUT, "local supply field selection: PASS; fresh enablement recheck: PASS; targeted CLI saved-scope recheck: PASS\n");
+        fwrite(STDOUT, "local supply field selection: PASS; catalog policy persistence and rollback: PASS; fresh enablement recheck: PASS; targeted CLI saved-scope recheck: PASS\n");
     } finally {
         fieldRemoveFixture($fixture);
     }

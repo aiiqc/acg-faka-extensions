@@ -16,6 +16,7 @@ final class SupplySyncStatus
         '单货源预算已耗尽', '本轮预算已耗尽', '远端返回业务失败', '远端凭据验证失败',
         '远端商品不可用', '远端商品详情无效', '远端 HTTPS 请求失败', '同步失败，原因未分类',
         '货源同步失败，未执行商品写入',
+        '目录巡检未完成：已提交的详情更新保留，未确认商品不清零或恢复',
     ];
     private int $remainingBytes = self::MAX_READ_BYTES;
 
@@ -174,6 +175,7 @@ final class SupplySyncStatus
             'phase' => in_array($entry['phase'] ?? null, ['preflight', 'catalog', 'planning', 'actions'], true)
                 ? $entry['phase'] : null,
             'catalog_diagnostic' => $entry['status'] === 'error'
+                || (($entry['detail_first'] ?? false) === true && ($entry['catalog_status'] ?? null) === 'failed')
                 ? self::diagnostic($entry['catalog_diagnostic'] ?? null) : null,
             'failure_diagnostic' => self::diagnostic($entry['failure_diagnostic'] ?? null),
             'request_diagnostics' => self::requests($entry['request_diagnostics'] ?? null),

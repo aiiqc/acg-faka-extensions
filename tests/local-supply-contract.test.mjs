@@ -27,7 +27,7 @@ test('declares a LocalExtensions package and no official plugin lifecycle', () =
         assert.equal(setting.type, 'checkbox');
         assert.equal(Object.hasOwn(setting, 'default'), false, 'legacy selection must remain absent');
     }
-    assert.equal(manifest.version, '1.1.20');
+    assert.equal(manifest.version, '1.1.21');
     assert.equal(manifest.namespace, 'Pika\\LocalExtensions\\PikaSupplySync\\');
     assert.equal(manifest.bootstrap, 'bootstrap.php');
     assert.deepEqual(manifest.hooks, []);
@@ -290,7 +290,145 @@ test('uses the safe client for every catalog and item request', () => {
     assert.match(gateway, /\/plugin\/SharedStock\/api\/items/);
     assert.match(gateway, /Str::generateSignature/);
     assert.match(sync, /\$this->gateway->items\(\$source\)/);
-    assert.match(sync, /\$this->gateway->item\(\$source, \$code\)/);
+    assert.match(sync, /\$this->gateway->item\(\$source, \$code(?:, \$detailOptions !== null)?\)/);
+});
+
+test('offers explicit strict detail identity and sparse selected-field normalization', () => {
+    const gateway = read('Service/SharedGateway.php');
+    const item = read('Service/RemoteItem.php');
+    assert.match(gateway, /function item\(Shared \$source, string \$code, bool \$strictIdentity = false\): array/);
+    assert.match(gateway, /strictLegacyTreeItem\(\$tree, \$code\)/);
+    assert.match(item, /public static function assertDetailFields\(array \$remote, string \$code, array \$fields\): void/);
+    assert.match(item, /\?array \$fields = null/);
+    assert.match(item, /if \(\$fields !== null\)/);
+});
+
+test('strict details reject ambiguous identity and missing selected fields without inventing defaults', t => {
+    const probe = spawnSync('docker', ['info'], {encoding: 'utf8'});
+    if (probe.error || probe.status !== 0) {
+        t.skip('An already-running Docker daemon is required for the isolated PHP contract');
+        return;
+    }
+    const script = String.raw`
+namespace App\Model { class Shared { public int $type = 0; public string $domain = 'https://fixture.invalid'; public string $app_id = 'fixture'; public string $app_key = 'fixture-secret'; } }
+namespace App\Util {
+    class Ini {
+        public static function toArray(string $text): array { if ($text !== '') throw new \RuntimeException('Unexpected synthetic config'); return []; }
+        public static function toConfig(array $value): string { if ($value !== []) throw new \RuntimeException('Unexpected synthetic config'); return ''; }
+    }
+    class Str { public static function generateSignature(array $data, string $key): string { return 'synthetic'; } }
+    class SharedCurrency {
+        public static int $converted = 0;
+        public static function factor($source): string { return '1'; }
+        public static function item(array $item, string $factor): array { self::$converted++; return $item; }
+    }
+}
+namespace Pika\LocalExtensions\PikaSupplySync\Service {
+    class SourcePolicy { public function assertSafe($source): void {} }
+    class SafeHttpClient {
+        public array $data = [];
+        public function clearDetailDiagnostics(): void {}
+        public function detailDiagnostics(): ?array { return null; }
+        public function diagnostics(): array { return []; }
+        public function postJson(string $url, array $headers, array $form): array { return ['code' => 200, 'data' => $this->data]; }
+    }
+    class ImageCache {}
+    class RunBudget { public int $text = 0; public function consumeText(int $bytes): void { $this->text += $bytes; } }
+}
+namespace {
+    $root = '/release/extensions/PikaSupplySync/Service/';
+    foreach (['UpstreamFailure', 'RemoteItemDataInvalid', 'RemoteItem', 'SharedGateway'] as $name) require $root . $name . '.php';
+    use Pika\LocalExtensions\PikaSupplySync\Service\RemoteItem;
+    use Pika\LocalExtensions\PikaSupplySync\Service\RemoteItemDataInvalid;
+    use Pika\LocalExtensions\PikaSupplySync\Service\SharedGateway;
+    use Pika\LocalExtensions\PikaSupplySync\Service\SafeHttpClient;
+    use Pika\LocalExtensions\PikaSupplySync\Service\SourcePolicy;
+    use Pika\LocalExtensions\PikaSupplySync\Service\ImageCache;
+    use Pika\LocalExtensions\PikaSupplySync\Service\RunBudget;
+    use Pika\LocalExtensions\PikaSupplySync\Service\UpstreamFailure;
+    $checks = 0;
+    function check(bool $value, string $label): void { global $checks; $checks++; if (!$value) throw new \RuntimeException($label); }
+    function rejects(callable $call, string $label, string $type = RemoteItemDataInvalid::class): void {
+        try { $call(); } catch (\Throwable $error) { check($error instanceof $type, $label . ': unexpected error type'); return; }
+        throw new \RuntimeException($label . ': accepted invalid detail');
+    }
+    $full = ['code' => 'A', 'price' => '2.50', 'user_price' => '2.00', 'draft_premium' => 0,
+        'config' => [], 'stock' => 4, 'widget' => '[]', 'draft_status' => 0,
+        'name' => 'A', 'description' => '', 'cover' => ''];
+    $fields = ['price', 'inventory', 'options', 'name', 'description', 'cover'];
+    RemoteItem::assertDetailFields($full, 'A', $fields); check(true, 'complete detail');
+    foreach (array_keys($full) as $key) {
+        $missing = $full; unset($missing[$key]);
+        rejects(fn() => RemoteItem::assertDetailFields($missing, 'A', $fields), 'missing ' . $key);
+        $missing[$key] = null;
+        rejects(fn() => RemoteItem::assertDetailFields($missing, 'A', $fields), 'null ' . $key);
+    }
+    foreach (['B', '', ' A', true, [], 1.5] as $identity) {
+        rejects(fn() => RemoteItem::assertDetailFields(array_replace($full, ['code' => $identity]), 'A', $fields), 'bad identity');
+    }
+    foreach (['price' => false, 'user_price' => -1, 'draft_premium' => INF, 'stock' => -1,
+        'config' => false, 'widget' => false, 'draft_status' => 2] as $key => $value) {
+        rejects(fn() => RemoteItem::assertDetailFields(array_replace($full, [$key => $value]), 'A', $fields), 'bad field ' . $key);
+    }
+    RemoteItem::assertDetailFields(['code' => 'A', 'stock' => 0], 'A', ['inventory']);
+    check(true, 'zero is explicit data, not permission to write');
+    RemoteItem::assertDetailFields(['code' => 'A', 'description' => ''], 'A', ['description']);
+    check(true, 'empty description is explicit');
+    rejects(fn() => RemoteItem::assertDetailFields($full, 'A', ['unknown']), 'unknown field');
+    $source = new \App\Model\Shared();
+    $http = new SafeHttpClient(); $gateway = new SharedGateway($http, new SourcePolicy());
+    $http->data = ['name' => 'legacy'];
+    check($gateway->item($source, 'A')['name'] === 'legacy', 'legacy native call remains compatible');
+    $converted = \App\Util\SharedCurrency::$converted;
+    rejects(fn() => $gateway->item($source, 'A', true), 'native identity required', UpstreamFailure::class);
+    check(\App\Util\SharedCurrency::$converted === $converted, 'identity fails before currency conversion');
+    $http->data = ['code' => 'A'];
+    $raw = $gateway->item($source, 'A', true);
+    check(!array_key_exists('config', $raw), 'missing config remains missing');
+    rejects(fn() => RemoteItem::assertDetailFields($raw, 'A', ['price']), 'native missing price fields');
+    $http->data = ['code' => 'A', 'config' => false];
+    rejects(fn() => $gateway->item($source, 'A', true), 'invalid config not converted to empty', UpstreamFailure::class);
+    $source->type = 2;
+    $http->data = [['name' => 'C', 'children' => [['name' => 'legacy']]]];
+    check($gateway->item($source, 'A')['name'] === 'legacy', 'legacy tree first child remains compatible');
+    rejects(fn() => $gateway->item($source, 'A', true), 'strict tree does not guess first child', UpstreamFailure::class);
+    $http->data = [['name' => 'C', 'children' => [['code' => 'B'], $full]]];
+    check($gateway->item($source, 'A', true)['code'] === 'A', 'unique matching identity, not position');
+    foreach ([[], [['children' => []]], [['children' => [$full, $full]]],
+        [['children' => [$full, ['name' => 'unknown']]]], [['children' => [['code' => 'B']]]],
+        [['children' => ['named' => $full]]]] as $badTree) {
+        $http->data = $badTree;
+        rejects(fn() => $gateway->item($source, 'A', true), 'invalid tree', UpstreamFailure::class);
+    }
+    $source->type = 1;
+    $v4 = ['id' => 'A', 'name' => 'V4', 'sku' => [['id' => 's1', 'name' => 'SKU', 'stock_price' => 3]]];
+    $http->data = $v4;
+    $mapped = $gateway->item($source, 'A', true);
+    check($mapped['code'] === 'A' && !array_key_exists('stock', $mapped) && !array_key_exists('widget', $mapped), 'V4 identity mapped but missing stock/widget not invented');
+    rejects(fn() => RemoteItem::assertDetailFields($mapped, 'A', ['inventory']), 'V4 no synthetic stock');
+    rejects(fn() => RemoteItem::assertDetailFields($mapped, 'A', ['price']), 'V4 no synthetic draft premium');
+    rejects(fn() => $gateway->item($source, 'B', true), 'V4 id mismatch', UpstreamFailure::class);
+    $http->data = array_replace($v4, ['sku' => [['id' => 's1', 'name' => 'SKU', 'stock_price' => 3, 'stock' => 5]]]);
+    check($gateway->item($source, 'A', true)['stock'] === 5, 'V4 explicit stock retains existing mapping');
+    $budget = new RunBudget(); $normalizer = new RemoteItem(new ImageCache(), $budget);
+    $minimal = ['code' => 'A', 'price' => 3, 'user_price' => 3, 'config' => [], 'draft_premium' => 0,
+        'description' => ['invalid unselected content'], 'name' => null];
+    $projected = $normalizer->normalize($source, $minimal, 'A', false, true, ['price']);
+    check(array_keys($projected) === ['code', 'price', 'user_price', 'draft_premium', 'config'], 'price projection contains no defaults or content');
+    check($budget->text === 0, 'unselected description is never purified or budgeted');
+    $projected = $normalizer->normalize($source, ['code' => 'A', 'stock' => 4], 'A', false, true, ['inventory']);
+    check($projected === ['code' => 'A', 'stock' => 4], 'inventory projection requires no name/config/prices');
+    $projected = $normalizer->normalize($source, ['code' => 'A', 'config' => '', 'widget' => [], 'draft_status' => 0], 'A', false, true, ['options']);
+    check(array_keys($projected) === ['code', 'config', 'draft_status', 'widget'], 'options projection contains only selected fields');
+    echo 'strict detail contract PASS (' . $checks . ' checks)' . PHP_EOL;
+}
+`;
+    const result = spawnSync('docker', [
+        'run', '--rm', '--network', 'none', '--pull', 'never', '-v', `${root}:/release:ro`, '--entrypoint', 'php',
+        process.env.PHP_FIXTURE_IMAGE || 'php:8.3-cli', '-d', 'display_errors=1', '-r', script,
+    ], {encoding: 'utf8'});
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /strict detail contract PASS \(\d+ checks\)/);
 });
 
 test('rechecks source identity inside every write transaction', () => {

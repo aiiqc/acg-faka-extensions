@@ -115,7 +115,7 @@ final class SharedGateway
         return UpstreamCategoryTree::iconNodes($snapshot, $ids);
     }
 
-    public function item(Shared $source, string $code): array
+    public function item(Shared $source, string $code, bool $strictIdentity = false): array
     {
         $this->responseStructure = null;
         $this->http->clearDetailDiagnostics();
@@ -125,10 +125,28 @@ final class SharedGateway
         $factor = SharedCurrency::factor($source);
         $this->policy->assertSafe($source);
         if ((int)$source->type === 1) {
-            $item = $this->v4Item($this->signedHeaders($source, '/plugin/open-api/item', ['id' => $code], true));
+            $raw = $this->signedHeaders($source, '/plugin/open-api/item', ['id' => $code], true);
+            if ($strictIdentity) $this->assertDetailIdentity(['code' => $raw['id'] ?? null], $code);
+            $item = $this->v4Item($raw);
+            if ($strictIdentity) {
+                // The legacy V4 mapper has compatibility defaults. Strict
+                // detail updates must retain absence rather than invent data.
+                if (!array_key_exists('stock', $raw['sku'][0])) unset($item['stock']);
+                foreach (['widget' => 'widget', 'description' => 'introduce', 'cover' => 'picture_url'] as $key => $remoteKey) {
+                    if (!array_key_exists($remoteKey, $raw)) {
+                        unset($item[$key]);
+                    } elseif (!is_string($raw[$remoteKey])) {
+                        $item[$key] = $raw[$remoteKey];
+                    }
+                }
+                foreach (['draft_status', 'draft_premium'] as $key) {
+                    unset($item[$key]);
+                    if (array_key_exists($key, $raw)) $item[$key] = $raw[$key];
+                }
+            }
         } elseif ((int)$source->type === 2) {
             $tree = $this->legacy($source, '/plugin/SharedStock/api/item', ['code' => $code], true);
-            $item = $this->legacyTreeItem($tree);
+            $item = $strictIdentity ? $this->strictLegacyTreeItem($tree, $code) : $this->legacyTreeItem($tree);
         } else {
             $item = $this->legacy($source, '/shared/commodity/item', ['code' => $code], true);
         }
@@ -136,10 +154,18 @@ final class SharedGateway
             throw new UpstreamFailure('schema', $this->responseDiagnostics());
         }
         try {
+            if ($strictIdentity) {
+                $this->assertDetailIdentity($item, $code);
+                if (array_key_exists('config', $item) && !is_array($item['config']) && !is_string($item['config'])) {
+                    throw new UpstreamFailure('item_invalid', $this->responseDiagnostics());
+                }
+            }
             if (isset($item['config']) && !is_array($item['config'])) {
                 $item['config'] = Ini::toArray((string)$item['config']);
             }
             return SharedCurrency::item($item, $factor);
+        } catch (UpstreamFailure $exception) {
+            throw $exception;
         } catch (\Throwable) {
             throw new UpstreamFailure('schema', $this->responseDiagnostics());
         }
@@ -223,6 +249,46 @@ final class SharedGateway
             throw new UpstreamFailure('item_unavailable', $this->responseDiagnostics());
         }
         throw new UpstreamFailure('item_invalid', $this->responseDiagnostics());
+    }
+
+    private function assertDetailIdentity(array $item, string $code): void
+    {
+        try {
+            RemoteItem::assertDetailFields($item, $code, []);
+        } catch (RemoteItemDataInvalid) {
+            throw new UpstreamFailure('item_invalid', $this->responseDiagnostics());
+        }
+    }
+
+    private function strictLegacyTreeItem(array $tree, string $code): array
+    {
+        if (!array_is_list($tree)) {
+            throw new UpstreamFailure('schema', $this->responseDiagnostics());
+        }
+        $matched = null;
+        $seen = [];
+        foreach ($tree as $category) {
+            if (!is_array($category) || !is_array($category['children'] ?? null)
+                || !array_is_list($category['children'])) {
+                throw new UpstreamFailure('schema', $this->responseDiagnostics());
+            }
+            foreach ($category['children'] as $item) {
+                if (!is_array($item) || (!is_string($item['code'] ?? null) && !is_int($item['code'] ?? null))) {
+                    throw new UpstreamFailure('item_invalid', $this->responseDiagnostics());
+                }
+                $identity = (string)$item['code'];
+                $this->assertDetailIdentity($item, $identity);
+                if (array_key_exists($identity, $seen)) {
+                    throw new UpstreamFailure('item_invalid', $this->responseDiagnostics());
+                }
+                $seen[$identity] = true;
+                if (hash_equals($code, $identity)) $matched = $item;
+            }
+        }
+        if ($matched === null) {
+            throw new UpstreamFailure($seen === [] ? 'item_unavailable' : 'item_invalid', $this->responseDiagnostics());
+        }
+        return $matched;
     }
 
     private function legacy(Shared $source, string $path, array $data = [], bool $detail = false): array
