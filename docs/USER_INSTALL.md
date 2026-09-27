@@ -1,10 +1,10 @@
 # Acg-Faka Extensions V0.1 用户安装教程
 
-本教程面向已经会部署基础 PHP 网站、可以使用 root 或 sudo 的 Acg-Faka 站长。Acg-Faka Extensions 当前候选提供 Pika 开发套装：在一套干净的官方异次元上，通过一条服务器安装命令加入「本地扩展」后台、四个固定扩展、Pika 主题和 `PikaBEpusdtAdapter` 原生支付适配器。
+本教程面向已经会部署基础 PHP 网站、可以使用 root 或 sudo 的 Acg-Faka 站长。Acg-Faka Extensions 提供 Pika 开发套装：在一套干净的官方异次元上，通过一条服务器安装命令加入「本地扩展」后台、四个固定扩展、Pika 主题和 `PikaBEpusdtAdapter` 原生支付适配器。
 
-当前本地 `v0.1.0-preview.2` 候选含 SupplySync `1.1.21`，套装仍为 `0.1.0-dev`，尚未发布，不是稳定版或新固定下载包。公开源码为 [aiiqc/acg-faka-extensions](https://github.com/aiiqc/acg-faka-extensions)；已有下载附件及 SHA256 以[preview1 预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.1)实际内容为准，该旧包不含 SupplySync 1.1.18–1.1.21、主题 1.1.7 或 SharedAccess。需要本候选功能时应等待实际发布，不猜测 preview2 下载地址，也不把 main 自动源码包当成已验证新发行包。本批检查与未覆盖边界见[项目状态](PROJECT_STATUS.md)。第 3 节缺少已核参数时会停止；源码或预览版不是生产许可。媒体权利与安全边界继续见[安全说明](../SECURITY.md)。
+当前 main 源码为 Pika 主题 `1.1.9`；已发布的 [v0.1.0-preview.2 固定包](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.2)仍为主题 `1.1.7`，两者均含 SupplySync `1.1.21`，套装仍为 `0.1.0-dev`。本轮不新增 tag／Release、不替换附件；第 3 节下载的是冻结的 preview.2，不含主题 1.1.9。需要 1.1.9 时须等待包含它的新固定发行包，不把 main 自动源码包当成已验收发行包。公开源码为 [aiiqc/acg-faka-extensions](https://github.com/aiiqc/acg-faka-extensions)，检查与未覆盖边界见[项目状态](PROJECT_STATUS.md)。源码或预览版不是生产许可。媒体权利与安全边界继续见[安全说明](../SECURITY.md)。
 
-候选四扩展为 PikaCatalogHub `0.6.9`、PikaSupplySync `1.1.21`、PikaOrderReturnWait `1.1.0`、PikaSharedAccess `0.1.0`；主题为 `1.1.7`，支付适配器为 `0.1.2`。SharedAccess 默认关闭，启用前先读[共享准入说明](../extensions/PikaSharedAccess/Wiki/README.md)；停用恢复原生行为，不等于关闭共享，启用空名单会拒绝全部受管原生共享请求。1.1.21 的详情优先、初始化与回退边界见 [8.2.1](#821-可选详情优先与目录巡检)，已有安全诊断与库存保护保留。最终制品、目标站部署和真实交易仍须分别验收，不能沿用旧版或其他站点结论。BEpusdt 后端单独部署，不包含在扩展安装器内。本文路径、账号和站点命名均为通用示例，不包含实际凭据。第一次使用先读[新手操作路径](USER_GUIDE.md)，再按本教程执行安装、预检和恢复。
+当前源码及 preview.2 均包含原四扩展：PikaCatalogHub `0.6.9`、PikaSupplySync `1.1.21`、PikaOrderReturnWait `1.1.0`、PikaSharedAccess `0.1.0`，支付适配器为 `0.1.2`；主题版本按上一段区分，1.1.9 的升级说明见 [13.4](#134-pika-119-主题源码页面元数据与窄屏公告)。SharedAccess 默认关闭，启用前先读[共享准入说明](../extensions/PikaSharedAccess/Wiki/README.md)；停用恢复原生行为，不等于关闭共享，启用空名单会拒绝全部受管原生共享请求。1.1.21 的详情优先、初始化与回退边界见 [8.2.1](#821-可选详情优先与目录巡检)，已有安全诊断与库存保护保留。最终制品、目标站部署和真实交易仍须分别验收，不能沿用旧版或其他站点结论。BEpusdt 后端单独部署，不包含在扩展安装器内。本文路径、账号和站点命名均为通用示例，不包含实际凭据。第一次使用先读[新手操作路径](USER_GUIDE.md)，再按本教程执行安装、预检和恢复。
 
 ## 1. 安装前先确认边界
 
@@ -91,7 +91,7 @@ Acg-Faka 不是完全只读源码应用：远端图片、模板缓存、应用�
 测试站必须完全照本教程从经过核验的固定归档安装，不能在安装失败后手工复制缺失文件。最低 canary 范围包括：
 
 - preinstall 与 installed doctor 都通过；
-- 后台组件与所核固定包一致：当前候选为四个本地扩展、Pika 主题和 `PikaBEpusdtAdapter`，旧 preview1 为三个扩展；
+- 后台组件与所核固定包一致：preview.2 为四个本地扩展、Pika 1.1.7 主题和 `PikaBEpusdtAdapter`，当前 main 主题为 1.1.9，旧 preview1 为三个扩展；
 - 在「智能货源中心」用一个受控上游完成官方保存与智能分析，确认分类映射和 `0%` 加价后，让后台任务分批入库；
 - PikaSupplySync `basic` dry-run 通过，并抽查分类、价格、库存、图片以及库存 0 隐藏与补货后恢复显示；
 - 记录目标文件系统的 `df -B1` 与站点、站外状态、图片缓存的 `du -sb`，并通过下面的容量硬门；
@@ -151,7 +151,7 @@ if test "$PIKA_ACG_VERSION" = '3.7.9'; then
 fi
 ```
 
-本例只接受公开新安装推荐的固定 `3.7.9`，不意味着候选已完成发布验收；先满足第 3 节制品门。上述检查只覆盖 CLI，仍须单独核验实际站点 FPM 的扩展。站点必须先能以官方主题完成登录、后台访问和数据库读写。不要把「官方站点本身尚未安装好」的问题带进本扩展安装。
+本例只接受公开新安装推荐的固定 `3.7.9`，不能据此认定目标站已验收；先满足第 3 节制品门。上述检查只覆盖 CLI，仍须单独核验实际站点 FPM 的扩展。站点必须先能以官方主题完成登录、后台访问和数据库读写。不要把「官方站点本身尚未安装好」的问题带进本扩展安装。
 
 ### 2.1 隔离试装磁盘空间硬门
 
@@ -181,16 +181,16 @@ printf 'catalog_snapshot_ceiling_bytes=%s\n' "$((16 * 1024 * 1024 * 64))"
 
 ## 3. 获取可信 release
 
-### 方式 A：固定预发布制品（附件存在后使用）
+### 方式 A：已发布的 preview.2 固定制品（主题 1.1.7）
 
-首个版本为预览版；需要稳定版的用户应继续等待。在[预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.1)确认 `acg-faka-extensions-v0.1.0-preview.1.tar.gz` 和同名 `.sha256` 两件附件实际存在，再从发布说明及配对校验文件取得同一制品的 SHA256；不存在或身份不一致时停止。不要用 GitHub 自动生成的 Source code 包替代。下载不要求登录 GitHub、PAT 或个人 SSH key；不要从聊天附件、网盘转存或 Web 上传目录直接以 root 执行。
+当前固定发行包为预览版；需要稳定版的用户应继续等待。在 [preview.2 预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.2)确认 `acg-faka-extensions-v0.1.0-preview.2.tar.gz` 和同名 `.sha256` 两件附件，并将发布说明、配对校验文件与下方 SHA256 核对；不存在或身份不一致时停止。该包固定于 commit `870c954f6e1270c2c8985d28749c94d0765a16c9`，含主题 `1.1.7`，不含 main 的主题 `1.1.9`。不要用 GitHub 自动生成的 Source code 包替代。下载不要求登录 GitHub、PAT 或个人 SSH key；不要从聊天附件、网盘转存或 Web 上传目录直接以 root 执行。
 
-确认附件存在后，在 Bash 中填入发布方给出的真实 SHA256。版本及预期附件地址已固定；SHA256 不能写入将被它校验的源码归档自身。空值或格式不符时，在联网、创建目录及提权之前停止。同一站点上的发布说明与校验文件并非独立签名；有更强完整性要求时还须通过独立可信渠道核对，不将同源自洽称为签名认证：
+下面的版本、地址及 SHA256 只对应已经冻结的 preview.2，不适用于以后从 main 构建的归档，也不预写新归档自身的哈希。确认附件与身份一致后在 Bash 中执行；空值或格式不符时，在联网、创建目录及提权之前停止。同一站点上的发布说明与校验文件并非独立签名；有更强完整性要求时还须通过独立可信渠道核对，不将同源自洽称为签名认证：
 
 ```bash
-export PIKA_VERSION='v0.1.0-preview.1'
-export PIKA_DOWNLOAD_URL='https://github.com/aiiqc/acg-faka-extensions/releases/download/v0.1.0-preview.1/acg-faka-extensions-v0.1.0-preview.1.tar.gz'
-export PIKA_EXPECTED_SHA256=''
+export PIKA_VERSION='v0.1.0-preview.2'
+export PIKA_DOWNLOAD_URL='https://github.com/aiiqc/acg-faka-extensions/releases/download/v0.1.0-preview.2/acg-faka-extensions-v0.1.0-preview.2.tar.gz'
+export PIKA_EXPECTED_SHA256='22b80e67aa886db10edef328ef7198b5b3408863fa65ca6635c44125a21135bc'
 [[ "$PIKA_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]] || exit 1
 [[ "$PIKA_DOWNLOAD_URL" =~ ^https://[A-Za-z0-9.-]+/[^[:space:]?#]*$ ]] || exit 1
 [[ "$PIKA_EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
@@ -301,7 +301,7 @@ INFO: INSTALL_PASS version=3.7.9 commit=5120942d2c13ac900d614b09cfd6fbf672b62840
 
 - 再次核对官方 commit 与关键文件哈希；
 - 备份五个兼容桥文件；
-- 安装本地扩展管理器、所核固定包中的扩展（当前候选四个，旧 preview1 三个）、Pika 主题和 `PikaBEpusdtAdapter`；
+- 安装本地扩展管理器、所核固定包中的扩展（preview.2 四个，旧 preview1 三个）、对应版本的 Pika 主题和 `PikaBEpusdtAdapter`；
 - 在 `/var/lib/pika-local-extensions` 创建站点外部私有状态；
 - 建立并核对上述官方运行目录、两个 root 保护父目录及其最小可变子树的精确所有权、模式与 ACL 契约；
 - 生成绑定文件 SHA256 与 Web UID/GID 的安装回执；
@@ -355,7 +355,7 @@ sudo stat -c '%U:%G %a %n' \
 - 首页能正常返回；
 - `/admin` 能登录；
 - 后台左侧出现「本地扩展」；
-- 页面列出「货源同步」「智能货源中心」「订单支付结果等待」，当前候选还包含「店铺共享准入」（内部 ID 不变，旧 preview1 不含后者）；
+- 页面列出「货源同步」「智能货源中心」「订单支付结果等待」，preview.2 及当前源码还包含「店铺共享准入」（内部 ID 不变，旧 preview1 不含后者）；
 - 异次元原生「支付管理」中出现 `PikaBEpusdtAdapter`；
 - 此时所安装的扩展仍应为停止状态。
 
@@ -527,7 +527,7 @@ Facebook／Telegram／Instagram 等平台 → 货源显示名 → 上游原始�
 
 ### 8.5.1 店名与公告外部链接
 
-Pika 1.1.7 会换行显示完整店名；手机端把品牌与账户／菜单分行，不需要缩短店名。只改「基本设置」中的店名也会一并重新保存「店铺公告」，公告仍须符合官方外链安全规则。
+Pika 自 1.1.7 起会换行显示完整店名，1.1.9 保留此行为；手机端把品牌与账户／菜单分行，不需要缩短店名。1.1.9 另调整窄屏公告并保持首页／分类 H1 默认视觉隐藏，见 [13.4](#134-pika-119-主题源码页面元数据与窄屏公告)。只改「基本设置」中的店名也会一并重新保存「店铺公告」，公告仍须符合官方外链安全规则。
 
 添加或恢复公告外链时，按以下顺序操作：
 
@@ -869,3 +869,15 @@ sudo env PIKA_PAYMENT_LOGROTATE_RULE="$PIKA_PAYMENT_LOGROTATE_RULE" \
 4. 核验 installed doctor、真实核心与制品身份、状态保留以及对应功能后再按批准解除维护。3.7.9 窄桥只接入既有三个文件中的扩展钩子，官方 Owner 权限、公告安全净化、可信代理 HTTPS 判定和金额边界必须保留。正常文本与安全格式、活动内容被移除均应验证；不要为保持旧公告脚本效果撤销净化。支付适配器继续委派官方订单／充值回调，旧版函数签名相同也不能替代新核心回归。
 
 源码静态／合成矩阵、真实固定 Git 核心隔离安装与恢复、最终制品复验、生产部署及真实交易是不同证据层。文件 receipt 不包含数据库回滚能力；失败时保留维护与现场，按准确恢复方案处理，不重开已知受影响的旧核心，也不回滚另一个已经健康的 3.7.9 站点。
+
+### 13.4 Pika 1.1.9 主题源码：页面元数据与窄屏公告
+
+当前 main 将 Pika 从 1.1.7 更新到 1.1.9，包含 1.1.8 的页面元数据逻辑；SupplySync 仍为 1.1.21，且继续包含 CatalogHub、OrderReturnWait 和默认关闭的 SharedAccess，共四个扩展。已发布 preview.2 固定包仍含主题 1.1.7，本轮不新增 tag／Release、不替换附件。现有安装器没有 theme-only 事务，不能把其他整包当作主题升级包，也不能热覆盖受管文件或手改 receipt；实际升级前须核对准确固定制品、目标站非主题载荷与配置差异，并完成对应整包 install／verify／restore 验证。独立目标站使用另一 SupplySync 基线的主题验收不能替代当前公库组合验收。
+
+首页继续使用官方全局标题与描述；首页加载默认分类不改变首页元数据。有效可见分类使用真实分类名称与店铺名称，空分类或无效分类不生成分类声明。商品保留独立标题／H1，description 使用商品现有说明的最多 160 字纯文本摘要，不新增营销、交付或售后承诺。分类直达、浏览器前进／后退与页面内切换共用服务端生成的元数据。公告内容、允许的外链和原净化流程保留，仅调整 575px 以下的已支持公告样式；首页／分类 H1 恢复 1.1.7 的视觉隐藏方式，保留原节点、文本与元数据，导航品牌及商品 H1 不隐藏，页面允许缩放。
+
+canonical 只读取后台已验证的 `config.domain` 主站域名配置，使用 HTTPS 与规范公开路径；不读取请求 Host／转发头，不带跟踪参数。这个官方配置还用于分站首次绑定后缀，具有共享业务含义，不能当作只影响 SEO 的新开关。后台「其他设置」保存会处理整页配置，首次保存还可能补入默认币种键；需要调整时，应先核对分站绑定影响、原有配置及保存前后的非目标字段。本轮主题源码同步不修改线上 domain，也不宣称 canonical 已生成。
+
+实际部署前须确认唯一配置值就是该站预期公开 HTTPS 域名。配置为空、多域名、私网／IP 字面量／内部主机名，或分站未提供可信独立域名时不输出 canonical；canonical 的部署准备须据实际配置单独判断，不能以请求 Host 猜测补齐。商品 canonical 指向对应商品，不统一指向首页。登录、会员中心、订单查询的 noindex 保留；公开 `/user/index/index`、`/user/index/item` 路由别名按实际公开页面归一化，不能一刀切禁止 `/user/`。
+
+本地浏览器样例只验证真实主题 JS／CSS 配合合成元数据的行为；PHP 行为与 Smarty 渲染、完整原生安装／恢复、线上配置及部署验证须分别记录，缺少证据保留 NOT RUN，不能沿用其他站点或旧包的通过结果。源码与有限目标站首页检查不代表搜索引擎收录、真实手机、当前公库整包部署或真实交易已通过。既有演示图仍是 1.1.7 布局参考；独立 FAQ／介绍可由站长在既有公告或独立页面补充，不能覆盖已启用同步的商品名称／描述。本次主题源码不包含 robots／sitemap、OG／schema、LLM／AI 插件或商品列表 SSR 改造。

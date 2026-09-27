@@ -7,7 +7,7 @@ use App\Consts\Render;
 
 final class Metadata
 {
-    public const VERSION = '1.1.7';
+    public const VERSION = '1.1.9';
 
     public const INFO = [
         'NAME' => 'Pika',

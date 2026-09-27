@@ -32,6 +32,7 @@ namespace {
         fail('usage: local-theme-header-nav-behavior.php AUTOLOAD THEME_ROOT');
     }
     require $autoload;
+    require_once $themeRoot . '/Seo.php';
 
     $GLOBALS['pika_nav_fixture'] = [
         ['name' => 'safe-blank', 'url' => '/safe', 'target' => '_blank', 'match' => ''],

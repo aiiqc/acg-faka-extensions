@@ -1,10 +1,10 @@
 # Acg-Faka Extensions
 
-> 当前本地 `v0.1.0-preview.2` 候选：PikaSupplySync `1.1.21` 增加默认关闭的详情优先与独立目录巡检，保留六项同步选择和既有保护。本候选尚未发布，不存在可据此使用的新固定下载包；旧 `v0.1.0-preview.1` 附件不含本次更新。配置与升级边界先看[安装教程](docs/USER_INSTALL.md#821-可选详情优先与目录巡检)。
+> 当前 main 源码的 Pika 主题已更新为 `1.1.9`，包含页面元数据、窄屏公告调整及首页／分类标题默认视觉隐藏；SupplySync 保持 `1.1.21`。已发布的 `v0.1.0-preview.2` 固定包仍为主题 `1.1.7`，不包含本次主题更新。本轮不新增 tag／Release、不替换附件；升级边界见[主题说明](docs/USER_INSTALL.md#134-pika-119-主题源码页面元数据与窄屏公告)。
 
 ![Pika 1.1.7 前台主题演示](docs/images/pika-theme-117-desktop.png)
 
-真实主题模板、CSS 和 JS 渲染的示例商店，全部商品与价格均为虚构，使用中性素材；不是生产或交易截图。[手机宽度演示](docs/images/pika-theme-117-mobile.png) · [店名与公告外链设置](docs/USER_INSTALL.md#851-店名与公告外部链接)
+沿用 Pika 1.1.7 真实主题模板、CSS 和 JS 渲染的布局参考，全部商品与价格均为虚构，使用中性素材；不是生产或交易截图，也不展示或证明 1.1.9 的全部功能。[手机宽度演示](docs/images/pika-theme-117-mobile.png) · [店名与公告外链设置](docs/USER_INSTALL.md#851-店名与公告外部链接)
 
 Acg-Faka Extensions 是面向官方 Acg-Faka 的非官方社区扩展与主题集合。当前首套组件使用 `Pika` 品牌，为官方 Acg-Faka 增加一套独立的开源「本地扩展」运行环境，并提供：
 
@@ -17,9 +17,14 @@ Acg-Faka Extensions 是面向官方 Acg-Faka 的非官方社区扩展与主题�
 - 商品页余额支付显示当前登录用户在页面加载时的余额；刷新页面后更新。游客不额外展示余额，缺失／异常金额不补成 0。金额不写入浏览器存储，离开或恢复缓存页面时清除新增金额；同页付款、其他标签页充值或切换账号后须刷新，不代表实时余额，不改变支付校验。
 - `PikaBEpusdtAdapter`：基于 BEpusdt 公共 API 独立实现的异次元原生支付适配器。
 
-当前候选安装完成后，四个扩展会出现在异次元后台左侧的「本地扩展」页面，支付适配器会出现在异次元原生「支付管理」中；它不会出现在异次元应用商店。服务器安装器不会替用户自动启用扩展、支付方式或切换主题。
+当前源码及 preview.2 固定包安装完成后，四个扩展会出现在异次元后台左侧的「本地扩展」页面，支付适配器会出现在异次元原生「支付管理」中；它不会出现在异次元应用商店。服务器安装器不会替用户自动启用扩展、支付方式或切换主题。
 
-> 候选组件为 SupplySync `1.1.21`、CatalogHub `0.6.9`、OrderReturnWait `1.1.0`、SharedAccess `0.1.0`、Pika 主题 `1.1.7` 和支付适配器 `0.1.2`，套装仍为 `0.1.0-dev`。SupplySync 1.1.18–1.1.20、主题 1.1.7 和 SharedAccess 已在主分支提供，不是本批重新新增。**旧 `v0.1.0-preview.1` 固定附件仍为 SupplySync 1.1.17／主题 1.1.6，不包含这些后续更新。** 旧固定包身份以[预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.1)为准；本地 preview2 候选不等于已创建 tag／Release，main 或自动 Source code 包也不是已验收的新发行包。验证边界见[项目状态](docs/PROJECT_STATUS.md)；源码、合成截图、固定产物与目标站部署／交易验收分开，第三方二进制媒体再分发权利仍未确认。
+| 来源 | Pika 主题 | SupplySync | SharedAccess | 获取与验证边界 |
+|---|---|---|---|---|
+| 当前 main 源码 | `1.1.9` | `1.1.21` | `0.1.0`，默认关闭 | 本次主题源码更新，尚无包含 1.1.9 的新固定发行包 |
+| 已发布 `v0.1.0-preview.2` | `1.1.7` | `1.1.21` | `0.1.0`，默认关闭 | [冻结的预发布包](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.2)，不随 main 更新 |
+
+两者均保留 CatalogHub `0.6.9`、OrderReturnWait `1.1.0`、支付适配器 `0.1.2` 和套装 `0.1.0-dev`。旧 `v0.1.0-preview.1` 固定附件仍为 SupplySync `1.1.17`／主题 `1.1.6`，且不含 SharedAccess。main 或自动 Source code 包不等于已验收的新发行包；验证边界见[项目状态](docs/PROJECT_STATUS.md)。源码、合成截图、固定产物与目标站部署／交易验收分别记录，第三方二进制媒体再分发权利仍未确认。
 
 公开源码：[aiiqc/acg-faka-extensions](https://github.com/aiiqc/acg-faka-extensions)。私密漏洞报告已启用，入口及脱敏要求见[安全说明](SECURITY.md)；完整证据边界见[项目状态](docs/PROJECT_STATUS.md)。
 
@@ -38,7 +43,7 @@ Acg-Faka Extensions 是面向官方 Acg-Faka 的非官方社区扩展与主题�
 - [贡献说明](CONTRIBUTING.md)
 - [安全报告与支持边界](SECURITY.md)
 
-当前候选一次安装本地扩展管理器、上述四个扩展、Pika 主题和 `PikaBEpusdtAdapter`。它暂不支持从后台上传 ZIP、填写 URL、执行 Shell、安装 systemd，或单独在线升级任意组件。
+当前源码及 preview.2 固定包一次安装本地扩展管理器、上述四个扩展、Pika 主题和 `PikaBEpusdtAdapter`，主题版本按上表区分。它暂不支持从后台上传 ZIP、填写 URL、执行 Shell、安装 systemd，或单独在线升级任意组件。
 
 ## 兼容范围
 
@@ -58,7 +63,7 @@ Acg-Faka Extensions 是面向官方 Acg-Faka 的非官方社区扩展与主题�
 下面只是流程摘要，不可替代[完整安装教程](docs/USER_INSTALL.md)：
 
 1. 先按[官方初始化与扩展权限切换说明](docs/USER_INSTALL.md#先完成官方首次初始化再切换到扩展权限契约)独立安装上述固定官方 Acg-Faka `3.7.9`，核验数据库及官方安装锁，再完成首次后台登录和本地使用协议确认；不要提前套用扩展安装后的只读配置权限。
-2. 在上述预发布页确认固定 tar.gz 与配对 `.sha256` 附件确实存在，再按完整教程获取并核对发布方提供的 SHA256；该页现有 preview1 是旧包，需要本候选功能时须等待实际发布，不能猜测 preview2 下载地址。预览版不等于稳定版或目标站已通过验收。
+2. 在 [preview.2 预发布页](https://github.com/aiiqc/acg-faka-extensions/releases/tag/v0.1.0-preview.2)核对固定 tar.gz 与配对 `.sha256`，再按完整教程下载并校验。该固定包包含主题 1.1.7；需要 1.1.9 时须等待包含它的新固定发行包，不能把 main 自动源码包当成新发行包。预览版不等于稳定版或目标站已通过验收。
 3. 把 release 解压到 `root:root`、Web 用户不可写的版本目录；目标站点根目录、兼容桥文件及其父目录也必须是 `root:root`。
 4. 对外启用 503 维护页，停止该站点的专用 PHP-FPM 与所有 Web/CLI 写入者；若使用共享 FPM master，只清空该站独立 pool 的 worker，禁止停掉承载其他站点的共享服务。
 5. 以 root 执行一次安装命令：

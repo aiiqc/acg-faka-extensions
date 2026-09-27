@@ -1,6 +1,6 @@
 #{include file="./Header.html"}
-<main class="container py-4 fbfaka-storefront">
-  <h1 class="fbfaka-store-title">#{if $config.title != ''}#{$config.title|escape:'html'}#{else}#{$config.shop_name|escape:'html'}#{/if}</h1>
+<main class="container py-4 fbfaka-storefront" data-pika-seo="#{$_pikaSeo.client|escape:'html'}">
+  <h1 class="fbfaka-store-title">#{$_pikaSeo.heading|escape:'html'}</h1>
   <section class="panel fbfaka-notice">
     <div class="panel-header">
       <span class="icon"><i class="fa-duotone fa-regular fa-bullhorn"></i></span>
@@ -43,5 +43,5 @@
     </div>
   </section>
 </main>
-#{ready("/app/View/User/Theme/Pika/Assets/index.js?pika=1.1.7&rev=20260914")}
+#{ready("/app/View/User/Theme/Pika/Assets/index.js?pika=1.1.9&rev=20260927-seo1")}
 #{include file="./Footer.html"}

@@ -1826,6 +1826,45 @@ body > footer,
   border: 0;
 }
 
+@media (max-width: 575px) {
+  .fbfaka-notice > .panel-body,
+  .fbfaka-notice .notice-wrapper,
+  .fbfaka-notice .cyber-notice-wrapper {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .fbfaka-notice .notice-wrapper,
+  .fbfaka-notice .cyber-notice-wrapper {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .fbfaka-notice .notice {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    line-height: 1.65;
+  }
+
+  .fbfaka-notice .notice > i,
+  .fbfaka-notice .notice > .notice-symbol {
+    margin-right: 5px;
+  }
+
+  .fbfaka-notice .btn-box {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fbfaka-notice .btn-box a,
+  .fbfaka-notice .notice a {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
 .fbfaka-storefront .fbfaka-notice {
   margin-bottom: 28px;
 }

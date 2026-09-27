@@ -1,20 +1,24 @@
+#{assign var="_pikaSeo" value=\App\View\User\Theme\Pika\Seo::page($config, $category|default:[], $item|default:null, $isBusinessSite|default:false, isset($tradeNo), $smarty.server.REQUEST_URI|default:'/') scope="parent"}
 <!DOCTYPE html>
 <html lang="#{lang_code()}">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="keywords" content="#{$config.keywords|escape:'html'}"/>
-    <meta name="description" content="#{$config.description|escape:'html'}"/>
+    <meta name="description" content="#{$_pikaSeo.description|escape:'html'}"/>
     <meta name="generator" content="Pika">
     <meta name="theme-color" content="#ffd43b">
     <link rel="icon" type="image/png" href="/app/View/User/Theme/Pika/Assets/pika-favicon-1.0.3.png">
     #{if isset($tradeNo)}
     <meta name="robots" content="noindex,nofollow,noarchive">
     #{/if}
-    #{if isset($item) || isset($tradeNo)}
+    #{if $_pikaSeo.canonical != ''}
+    <link rel="canonical" href="#{$_pikaSeo.canonical|escape:'html'}" data-pika-canonical>
+    #{/if}
+    #{if isset($tradeNo)}
     <title>#{$title|escape:'html'} - #{$config.shop_name|escape:'html'}</title>
     #{else}
-    <title>#{$config.title|escape:'html'}</title>
+    <title>#{$_pikaSeo.title|escape:'html'}</title>
     #{/if}
     #{css(
     [
@@ -33,7 +37,7 @@
     "/assets/common/css/toastr.min.css",
     "/assets/user/css/index.css"
     ])}
-    <link rel="stylesheet" href="/app/View/User/Theme/Pika/Assets/pika.css?theme=1.1.7&amp;rev=20260925-brand1">
+    <link rel="stylesheet" href="/app/View/User/Theme/Pika/Assets/pika.css?theme=1.1.9&amp;rev=20260927-h1hide1">
     #{js("/assets/common/js/ready.js")}
     #{index_var()}
     <!--start::HOOK-->

@@ -15,7 +15,11 @@ assert.ok(['classic', 'default'].includes(scrollbars));
 const browserOptions = {headless: true, executablePath: process.env.CHROME_BIN,
     ...(scrollbars === 'classic' ? {ignoreDefaultArgs: ['--hide-scrollbars']} : {})};
 assert.ok(['before', 'after'].includes(phase) || (phase === 'parent' && process.env.PIKA_QA_CASE === 'purchase'));
-if (process.env.PIKA_QA_CASE === 'purchase') {
+if (process.env.PIKA_QA_CASE === 'seo') {
+    await checkSeoPresentation();
+} else if (process.env.PIKA_QA_CASE === 'hidden-heading') {
+    await checkHiddenHeadingPresentation();
+} else if (process.env.PIKA_QA_CASE === 'purchase') {
     await checkPurchasePresentation();
 } else {
 const cssLink = header => {
@@ -117,6 +121,215 @@ try {
 } finally {
     await browser.close();
 }
+}
+
+async function checkSeoPresentation() {
+    // This is the actual JS/CSS with synthetic server metadata, not a Smarty,
+    // production, crawler or real-device result. PHP assertions cover the
+    // server builder separately when a PHP/Smarty runtime is available.
+    const baseline = fs.realpathSync(process.env.PIKA_QA_BASELINE_ROOT);
+    assert.notEqual(baseline, root);
+    const read = relative => fs.readFileSync(path.join(phase === 'before' ? baseline : root, relative), 'utf8');
+    const css = read('themes/Pika/Assets/pika.css');
+    const runtime = read('themes/Pika/Assets/index.js');
+    const styles = ['assets/common/css/bootstrap.min.css', 'assets/user/css/index.css']
+        .map(file => `<style>${fs.readFileSync(path.join(official, file), 'utf8')}</style>`).join('') + `<style>${css}</style>`;
+    const home = {title: '合成首页 & 原有定位', description: '合成站点原有说明', heading: '合成首页 & 原有定位', canonical: 'https://shop.example.com/'};
+    const category = (name, id) => ({title: `${name} - 合成店铺`, description: `${name} - 合成店铺`, heading: name, canonical: `https://shop.example.com/cat/${id}`});
+    const data = {home, categories: {'7': category('工具 & 指南', 7), '9': category('资料 <文本>', 9), recommend: category('精选', 'recommend')}, aliases: {'10': '7'}};
+    const escape = text => String(text).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    const routeId = url => url.searchParams.has('s[]') ? 'invalid' : /^\/cat\/([^/]+)\/?$/.exec(url.searchParams.get('s') || url.pathname)?.[1] || url.searchParams.get('cid') || (url.searchParams.has('cid') || url.searchParams.has('cid[]') ? 'invalid' : '');
+    const expected = url => {
+        const requested = routeId(url), id = Object.hasOwn(data.aliases, requested) ? data.aliases[requested] : requested;
+        return Object.hasOwn(data.categories, id) ? data.categories[id] : {...home, canonical: requested ? '' : home.canonical};
+    };
+    const links = ['https://example.com/support', 'https://example.com/guide', `https://example.com/${'long-contact-path-'.repeat(12)}`];
+    const notice = `<div class="notice-wrapper" style="grid-template-columns:repeat(3,1fr)"><div class="notice warning"><span class="notice-symbol">!</span><span>原有公告文字与</span> <span class="highlight">强调文本</span> <span>保持不变，长链接仍需完整可读。</span></div><div class="btn-box">${links.map((link, i) => `<a href="${link}">${i < 2 ? ['联系入口', '说明入口'][i] : link}</a>`).join('')}</div></div>`;
+    const html = url => {
+        const initial = expected(url);
+        return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(initial.title)}</title><meta name="description" content="${escape(initial.description)}">${initial.canonical ? `<link rel="canonical" data-pika-canonical href="${initial.canonical}">` : ''}${styles}</head><body class="fbfaka-public"><main class="container py-4 fbfaka-storefront" data-pika-seo="${escape(JSON.stringify(data))}"><h1 class="fbfaka-store-title">${escape(initial.heading)}</h1><section class="panel fbfaka-notice"><div class="panel-header"><span class="icon">!</span><h6 class="panel-title">最新公告</h6></div><div class="panel-body">${notice}</div></section><div class="fbfaka-category-group"><button class="category-parent" data-id="10" aria-expanded="false">父分类</button><div class="category-children" hidden><a class="switch-category" data-id="7" data-count="2" href="/cat/7">工具</a></div></div><a class="switch-category" data-id="9" data-count="1" href="/cat/9">资料</a><a class="switch-category" data-id="recommend" data-count="1" href="/cat/recommend">精选</a><div class="item-list"></div></main></body></html>`;
+    };
+    const {chromium} = await import(pathToFileURL(path.join(process.env.PLAYWRIGHT_MODULE, 'index.mjs')));
+    const browser = await chromium.launch(browserOptions);
+    const failures = [], results = [], screenshots = [];
+    const check = (condition, label) => { if (!condition) failures.push(label); };
+    try {
+        const context = await browser.newContext({serviceWorkers: 'block', reducedMotion: 'reduce'});
+        await context.route('**/*', route => {
+            const url = new URL(route.request().url());
+            if (url.hostname === 'pika-fixture.invalid' && route.request().isNavigationRequest()) {
+                return route.fulfill({contentType: 'text/html', body: html(url)});
+            }
+            return route.abort();
+        });
+        const setup = async page => {
+            await page.evaluate(() => {
+                window.getVar = () => '7';
+                window.trade = {getCommodityList(options) { options.done([]); }};
+                window.i18n = value => value;
+            });
+            await page.addScriptTag({content: runtime});
+        };
+        const verify = async (page, label, wanted = expected(new URL(page.url()))) => {
+            const measured = await page.evaluate(() => ({title: document.title,
+                description: document.querySelector('meta[name="description"]').content,
+                heading: document.querySelector('h1').textContent,
+                canonicals: Array.from(document.querySelectorAll('link[rel="canonical"]'), link => link.href)}));
+            check(measured.title === wanted.title, label + ': title');
+            check(measured.description === wanted.description, label + ': description');
+            check(measured.heading === wanted.heading, label + ': H1');
+            check(JSON.stringify(measured.canonicals) === JSON.stringify(wanted.canonical ? [wanted.canonical] : []), label + ': one or no canonical');
+            results.push({label, url: page.url(), measured});
+        };
+        const page = await context.newPage();
+        await page.goto('https://pika-fixture.invalid/');
+        await setup(page);
+        await verify(page, 'home retains official settings while default category loads');
+        await page.locator('[data-id="9"]').click();
+        await verify(page, 'category pushState');
+        await page.goBack();
+        await verify(page, 'back to home');
+        await page.goForward();
+        await verify(page, 'forward to category');
+        await page.locator('[data-id="recommend"]').click();
+        await verify(page, 'recommend pushState');
+        for (const route of ['/cat/7', '/cat/10', '/cat/recommend', '/cat/999', '/cat/constructor', '/cat/7%30', '/cat/%ZZ', '/?cid=7', '/?cid=', '/?cid[]=7', '/?s[]=/cat/7', '/user/index/index?cid=7', '/index.php?s=/user/index/index&cid=7', '/?s=/cat/7', '/index.php?s=/cat/7']) {
+            await page.goto('https://pika-fixture.invalid' + route);
+            await setup(page);
+            await verify(page, 'direct ' + route);
+        }
+        await page.goto('https://pika-fixture.invalid/');
+        await setup(page);
+        for (const width of [375, 1440]) {
+            await page.setViewportSize({width, height: 1000});
+            await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            const layout = await page.evaluate(() => {
+                const heading = document.querySelector('h1'), notice = document.querySelector('.fbfaka-notice');
+                const anchors = Array.from(notice.querySelectorAll('a'));
+                const headingStyle = getComputedStyle(heading);
+                return {headingWidth: heading.getBoundingClientRect().width, headingHeight: heading.getBoundingClientRect().height,
+                    headingPosition: headingStyle.position, headingOverflow: headingStyle.overflow,
+                    headingClip: headingStyle.clip, headingClipPath: headingStyle.clipPath,
+                    overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+                    noticeBodyWidth: notice.querySelector('.panel-body').getBoundingClientRect().width,
+                    noticeOverflow: notice.scrollWidth > notice.clientWidth + 1,
+                    noticeText: notice.textContent, links: anchors.map(link => link.href),
+                    singleColumn: getComputedStyle(notice.querySelector('.notice-wrapper')).gridTemplateColumns.split(' ').length === 1,
+                    linkOverflow: anchors.some(link => link.scrollWidth > link.clientWidth + 1)};
+            });
+            if (phase === 'before') assert.ok(layout.headingWidth > 100 && layout.headingHeight > 20, `baseline visible H1 ${width}`);
+            check(layout.headingWidth === 1 && layout.headingHeight === 1
+                && layout.headingPosition === 'absolute' && layout.headingOverflow === 'hidden'
+                && layout.headingClip === 'rect(0px, 0px, 0px, 0px)' && layout.headingClipPath === 'inset(50%)', `visually hidden H1 ${width}`);
+            if (width === 375) {
+                check(layout.singleColumn, '375px notice single column');
+                check(!layout.overflow && !layout.linkOverflow, '375px no notice/long-link overflow');
+            } else {
+                check(layout.noticeBodyWidth > 500, '1440px readable notice body width');
+                check(!layout.overflow && !layout.noticeOverflow && !layout.linkOverflow, '1440px no notice/long-link overflow');
+            }
+            check(JSON.stringify(layout.links) === JSON.stringify(links), `three unchanged links ${width}`);
+            check(layout.noticeText.includes('原有公告文字与') && layout.noticeText.includes('强调文本'), `original notice text ${width}`);
+            results.push({width, layout});
+            const screenshot = path.join(output, `${phase}-seo-notice-${width}.png`);
+            await page.screenshot({path: screenshot, fullPage: true});
+            screenshots.push(screenshot);
+        }
+        const report = {phase, status: failures.length ? (phase === 'before' ? 'EXPECTED_BASELINE_FAILURE' : 'FAIL') : 'PASS',
+            scope: 'local actual JS/CSS with synthetic metadata; PHP/Smarty and production NOT RUN here', failures, results, screenshots};
+        fs.writeFileSync(path.join(output, `${phase}-seo-notice.json`), JSON.stringify(report, null, 2));
+        console.log(JSON.stringify(report));
+        if (phase === 'after') assert.deepEqual(failures, []);
+        else assert.ok(failures.length > 0, 'baseline must demonstrate the missing behavior');
+    } finally {
+        await browser.close();
+    }
+}
+
+async function checkHiddenHeadingPresentation() {
+    // Reuse prior full Smarty output. No new PHP render, application or API call.
+    const baseline = fs.realpathSync(process.env.PIKA_QA_BASELINE_ROOT);
+    const rendered = fs.realpathSync(process.env.PIKA_QA_RENDER_ROOT);
+    const source = phase === 'before' ? baseline : root;
+    const read = (directory, relative) => fs.readFileSync(path.join(directory, relative), 'utf8');
+    const normalizeVersion = text => text.replaceAll('1.1.9', '1.1.8').replaceAll('20260927-h1hide1', '20260927-seo1');
+    for (const relative of ['Index/Header.html', 'Index/Footer.html', 'Index/Index.html', 'Index/Item.html', 'Seo.php', 'Assets/index.js']) {
+        assert.equal(normalizeVersion(read(root, `themes/Pika/${relative}`)), read(baseline, `themes/Pika/${relative}`),
+            `Prior Smarty markup remains valid except resource versions: ${relative}`);
+    }
+    const cssLink = directory => read(directory, 'themes/Pika/Index/Header.html')
+        .match(/<link rel="stylesheet" href="[^\"]*\/pika\.css[^\"]*">/)[0];
+    const oldLink = cssLink(baseline), currentLink = cssLink(source);
+    const {chromium} = await import(pathToFileURL(path.join(process.env.PLAYWRIGHT_MODULE, 'index.mjs')));
+    const browser = await chromium.launch(browserOptions);
+    const records = [], stylesheetRequests = [];
+    try {
+        const context = await browser.newContext({serviceWorkers: 'block', reducedMotion: 'reduce', javaScriptEnabled: false});
+        await context.route('**/*', route => {
+            const url = new URL(route.request().url());
+            if (url.hostname !== 'pika-fixture.invalid') return route.abort();
+            if (route.request().isNavigationRequest()) {
+                const id = url.pathname.slice(1);
+                assert.ok(['home', 'category', 'product-clean-query'].includes(id));
+                const html = read(rendered, `${id}/rendered.html`);
+                assert.ok(html.includes(oldLink));
+                return route.fulfill({contentType: 'text/html', body: html.replace(oldLink, currentLink)});
+            }
+            if (!['stylesheet', 'image'].includes(route.request().resourceType())) return route.abort();
+            const themePrefix = '/app/View/User/Theme/Pika/';
+            const file = url.pathname.startsWith(themePrefix)
+                ? path.join(source, 'themes/Pika', url.pathname.slice(themePrefix.length))
+                : path.join(official, url.pathname);
+            if (!file.startsWith(source + path.sep) && !file.startsWith(official + path.sep)) return route.abort();
+            if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return route.abort();
+            if (url.pathname.endsWith('/pika.css')) stylesheetRequests.push(url.href);
+            return route.fulfill({path: file});
+        });
+        for (const width of [375, 1440]) {
+            for (const id of ['home', 'category', 'product-clean-query']) {
+                const page = await context.newPage();
+                await page.setViewportSize({width, height: 1000});
+                await page.goto(`https://pika-fixture.invalid/${id}`);
+                const measured = await page.evaluate(() => {
+                    const heading = document.querySelector('h1'), brand = document.querySelector('.navbar-brand');
+                    const style = getComputedStyle(heading), box = heading.getBoundingClientRect(), logo = brand.querySelector('img');
+                    return {title: document.title, description: document.querySelector('meta[name="description"]').content,
+                        canonical: document.querySelector('link[rel="canonical"]')?.href || '', heading: heading.textContent,
+                        targeted: heading.classList.contains('fbfaka-store-title'), width: box.width, height: box.height,
+                        position: style.position, overflow: style.overflow, clip: style.clip, clipPath: style.clipPath,
+                        brand: brand.querySelector('span').textContent, brandWidth: brand.getBoundingClientRect().width,
+                        brandHeight: brand.getBoundingClientRect().height, logoLoaded: logo.complete && logo.naturalWidth > 0,
+                        pageOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+                        cssUrl: document.querySelector('link[href*="/pika.css"]').href};
+                });
+                const hidden = measured.width === 1 && measured.height === 1 && measured.position === 'absolute'
+                    && measured.overflow === 'hidden' && measured.clip === 'rect(0px, 0px, 0px, 0px)' && measured.clipPath === 'inset(50%)';
+                assert.equal(hidden, phase === 'after' && id !== 'product-clean-query');
+                if (!hidden) assert.ok(measured.width > 1 && measured.height > 1 && measured.clip === 'auto'
+                    && measured.clipPath === 'none', `unclipped heading: ${JSON.stringify({id, viewportWidth: width, measured})}`);
+                assert.equal(measured.brand, 'Fixture Shop');
+                assert.ok(measured.brandWidth > 50 && measured.brandHeight > 20 && measured.logoLoaded);
+                assert.equal(measured.pageOverflow, false);
+                if (phase === 'after') assert.match(measured.cssUrl, /theme=1\.1\.9&rev=20260927-h1hide1$/);
+                assert.ok(stylesheetRequests.includes(measured.cssUrl));
+                records.push({viewportWidth: width, id, ...measured});
+                await page.screenshot({path: path.join(output, `${phase}-hidden-heading-${id}-${width}.png`), fullPage: true});
+                await page.close();
+            }
+        }
+        if (phase === 'after') {
+            const previous = JSON.parse(read(output, 'before-hidden-heading.json'));
+            for (let i = 0; i < records.length; i++) {
+                for (const field of ['id', 'viewportWidth', 'title', 'description', 'canonical', 'heading', 'brand', 'brandWidth', 'brandHeight']) {
+                    assert.deepEqual(records[i][field], previous.records[i][field], `${field} unchanged`);
+                }
+            }
+        }
+        const report = {phase, status: 'PASS', browserVersion: browser.version(), records, stylesheetRequests,
+            boundary: 'Prior verified full Smarty HTML, current CSS, scripts disabled. Resource URL substituted only after template equivalence check. Not a new Smarty render, production, real device or HTTP cache test.'};
+        fs.writeFileSync(path.join(output, `${phase}-hidden-heading.json`), JSON.stringify(report, null, 2));
+        console.log(JSON.stringify(report));
+    } finally { await browser.close(); }
 }
 
 async function checkPurchasePresentation() {

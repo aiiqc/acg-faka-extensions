@@ -69,6 +69,46 @@
   );
   var rulesScrollScheduled = false;
   var rulesScrollFrame = null;
+  var seoData = null;
+  var seoRoot = document.querySelector("[data-pika-seo]");
+  try {
+    seoData = seoRoot ? JSON.parse(seoRoot.dataset.pikaSeo) : null;
+  } catch (error) {
+    seoData = null;
+  }
+
+  function updateMetadata() {
+    if (!seoData || !seoData.home || !seoData.categories || !seoData.aliases || !isStorefrontRoute()) {
+      return;
+    }
+    var routeCategory = categoryFromPath();
+    var categoryId = Object.prototype.hasOwnProperty.call(seoData.aliases, routeCategory)
+      ? seoData.aliases[routeCategory] : routeCategory;
+    var knownCategory = Object.prototype.hasOwnProperty.call(seoData.categories, categoryId);
+    var metadata = knownCategory ? seoData.categories[categoryId] : seoData.home;
+    var canonicalUrl = routeCategory && !knownCategory ? "" : metadata.canonical;
+    document.title = metadata.title;
+    var description = document.querySelector('meta[name="description"]');
+    if (description) {
+      description.setAttribute("content", metadata.description);
+    }
+    var heading = seoRoot.querySelector(".fbfaka-store-title");
+    if (heading) {
+      heading.textContent = metadata.heading;
+    }
+    var canonical = document.querySelector("[data-pika-canonical]");
+    if (canonicalUrl) {
+      if (!canonical) {
+        canonical = document.createElement("link");
+        canonical.setAttribute("rel", "canonical");
+        canonical.setAttribute("data-pika-canonical", "");
+        document.head.appendChild(canonical);
+      }
+      canonical.setAttribute("href", canonicalUrl);
+    } else if (canonical) {
+      canonical.remove();
+    }
+  }
 
   function plainText(value) {
     if (value === null || value === undefined) {
@@ -230,11 +270,27 @@
     watchdogId = null;
   }
 
-  function isStorefrontRoute() {
+  function storefrontPath() {
     var pathname = window.location && typeof window.location.pathname === "string"
       ? window.location.pathname
       : "";
-    return pathname === "/" || /^\/cat\/[^/?#]+\/?$/.test(pathname);
+    if (["/", "/index.php"].indexOf(pathname) !== -1 && typeof window.URLSearchParams === "function") {
+      var query = new window.URLSearchParams(window.location.search || "");
+      if (Array.from(query.keys()).some(function (key) { return key.indexOf("s[") === 0; })) {
+        return "";
+      }
+      if (query.has("s")) {
+        var routes = query.getAll("s");
+        pathname = "/" + routes[routes.length - 1].replace(/^\/+|\/+$/g, "");
+      }
+    }
+    return pathname;
+  }
+
+  function isStorefrontRoute() {
+    var pathname = storefrontPath();
+    return ["/", "/index.php", "/user/index/index", "/user/index/index/"].indexOf(pathname) !== -1
+      || /^\/cat\/[^/?#]+\/?$/.test(pathname);
   }
 
   function destroyRuntime() {
@@ -483,6 +539,7 @@
     if (updateUrl && window.history && typeof window.history.pushState === "function") {
       window.history.pushState(null, "", "/cat/" + encodeURIComponent(requested));
     }
+    updateMetadata();
     requestCommodity({ categoryId: requested });
   }
 
@@ -502,15 +559,22 @@
   }
 
   function categoryFromPath() {
-    var pathname = window.location && typeof window.location.pathname === "string"
-      ? window.location.pathname
-      : "";
+    var pathname = storefrontPath();
     var match = pathname.match(/^\/cat\/([^/?#]+)\/?$/);
     if (!match) {
+      if (["/", "/index.php", "/user/index/index", "/user/index/index/"].indexOf(pathname) !== -1
+          && typeof window.URLSearchParams === "function") {
+        var query = new window.URLSearchParams(window.location.search || "");
+        if (Array.from(query.keys()).some(function (key) { return key.indexOf("cid[") === 0; })) {
+          return "invalid";
+        }
+        var ids = query.getAll("cid");
+        return ids.length ? ids[ids.length - 1] || "invalid" : "";
+      }
       return "";
     }
     try {
-      return decodeURIComponent(match[1]);
+      return /^(?:[1-9][0-9]*|recommend)$/.test(match[1]) ? match[1] : "invalid";
     } catch (error) {
       return "";
     }
@@ -660,6 +724,7 @@
   }
 
   if (!firstCategory) {
+    updateMetadata();
     setLoading(false);
     showMessage(translate("没有商品"));
     settleRequestedRulesAnchor();
@@ -672,7 +737,7 @@
     }
     var pathCategory = categoryFromPath();
     var nextCategory = resolveRouteCategory(pathCategory, firstCategory);
-    if (pathCategory && pathCategory !== nextCategory) {
+    if (pathCategory && firstChildCategory(pathCategory) && pathCategory !== nextCategory) {
       replaceCategoryUrl(nextCategory);
     }
     switchCategory(nextCategory, false);
@@ -689,7 +754,7 @@
   var initialCategory = initialPathCategory
     ? resolveRouteCategory(initialPathCategory, configuredInitialCategory)
     : configuredInitialCategory;
-  if (initialPathCategory && initialPathCategory !== initialCategory) {
+  if (initialPathCategory && firstChildCategory(initialPathCategory) && initialPathCategory !== initialCategory) {
     replaceCategoryUrl(initialCategory);
   }
   switchCategory(initialCategory, false);
