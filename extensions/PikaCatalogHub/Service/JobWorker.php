@@ -563,8 +563,17 @@ final class JobWorker
         } catch (\Throwable) {
             // Observability must not change the import or checkpoint outcome.
         }
+        // Request telemetry has a wider contract than the durable job summary.
+        // Keep the existing task schema and its strict validators unchanged.
         $this->detailDiagnostic = is_array($safe)
-            ? ['index' => $index, 'diagnostics' => UpstreamFailure::sanitize($safe)]
+            ? ['index' => $index, 'diagnostics' => array_intersect_key(
+                UpstreamFailure::sanitize($safe),
+                array_flip([
+                    'category', 'http_status', 'curl_code', 'elapsed_ms', 'attempts',
+                    'mime_category', 'mime_count', 'json_valid', 'mime_compatibility',
+                    'json_error_code', 'json_error', 'response_structure',
+                ]),
+            )]
             : null;
     }
 

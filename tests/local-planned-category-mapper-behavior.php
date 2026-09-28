@@ -84,7 +84,10 @@ namespace {
     use Illuminate\Database\Schema\Blueprint;
     use Pika\LocalExtensions\PikaCatalogHub\Service\AdminService;
     use Pika\LocalExtensions\PikaCatalogHub\Service\ConfigRepository;
+    use Pika\LocalExtensions\PikaCatalogHub\Service\JobService;
     use Pika\LocalExtensions\PikaCatalogHub\Service\JobStore;
+    use Pika\LocalExtensions\PikaCatalogHub\Service\JobWorker;
+    use Pika\LocalExtensions\PikaCatalogHub\Service\SnapshotStore;
     use Pika\LocalExtensions\PikaCatalogHub\Service\SourceAliasService;
     use Pika\LocalExtensions\PikaSupplySync\Service\CommodityImportFailure;
     use Pika\LocalExtensions\PikaSupplySync\Service\CategoryIcons;
@@ -98,6 +101,8 @@ namespace {
     use Pika\LocalExtensions\PikaSupplySync\Service\RunBudget;
     use Pika\LocalExtensions\PikaSupplySync\Service\SafeHttpClient;
     use Pika\LocalExtensions\PikaSupplySync\Service\SharedGateway;
+    use Pika\LocalExtensions\PikaSupplySync\Service\SourceIdentity;
+    use Pika\LocalExtensions\PikaSupplySync\Service\SourceLock;
     use Pika\LocalExtensions\PikaSupplySync\Service\SourcePolicy;
 
     function mapperExpect(bool $condition, string $message): void
@@ -2383,5 +2388,165 @@ namespace {
         && $categoryIcons->apply($wideSource, $skipOnlyReceipt)['status'] === 'no_changes'
         && $categoryIcons->apply($wideSource, $skipOnlyReceipt, true)['status'] === 'no_changes'
         && $localSnapshot() === $beforeServiceMaintenance, 'all-default/manual plan changed state or was not an explicit no-op');
+    // Real HTTP/gateway/importer/SQLite/map/checkpoint integration, with synthetic transport only.
+    $workerSourceId = 60000;
+    DB::table('shared')->insert([
+        'id'=>$workerSourceId, 'type'=>0, 'name'=>'worker-fixture', 'domain'=>'https://worker.example',
+        'app_id'=>'fixture-merchant', 'app_key'=>'fixture-signing-key', 'currency'=>'CNY', 'currency_rate'=>'1',
+    ]);
+    $workerSource = Shared::query()->findOrFail($workerSourceId);
+    $workerAlias = 'worker-fixture';
+    $aliasConfig->upsertAlias($workerSourceId, $workerAlias);
+    $workerFingerprint = SourceIdentity::fingerprint($workerSource);
+    $workerTarget = ['group'=>'Worker fixture', 'family'=>'Diagnostics'];
+    $workerJobs = new JobService();
+    $workerBudget = new RunBudget();
+    $atDetail = null;
+    $rejectWorkerDetail = false;
+    $workerHttp = new SafeHttpClient($policy,
+        static function (array $endpoint, string $address, string $method, array $headers, string $body) use (
+            &$rejectWorkerDetail, $newTransport,
+        ): array {
+            if ($rejectWorkerDetail) {
+                mapperExpect($method === 'POST', 'business rejection attempted an image download');
+                return ['status'=>200, 'content_type'=>'application/json', 'connected_ip'=>$address,
+                    'body'=>json_encode(['code'=>500, 'msg'=>'synthetic business rejection', 'data'=>[]], JSON_THROW_ON_ERROR)];
+            }
+            return $newTransport($endpoint, $address, $method, $headers, $body);
+        }, $workerBudget);
+    $workerImporter = new CommodityImporter(new SharedGateway($workerHttp, $policy), new PriceAdjuster(),
+        new RemoteItem(new ImageCache($workerHttp, $workerBudget), $workerBudget), $policy);
+    $makeWorkerTask = static function (array $codes) use (
+        $workerJobs, $workerSourceId, $workerAlias, $workerFingerprint, $workerTarget,
+    ): array {
+        $task = $workerJobs->createAnalysis($workerSourceId, $workerAlias, $workerFingerprint);
+        $claim = $workerJobs->beginWork($task['task_id'], $task['revision']);
+        $items = array_map(static fn(string $code): array =>
+            ['code'=>$code,'category'=>'Worker category','stock'=>1,'target'=>$workerTarget], $codes);
+        $analysis = $workerJobs->storeAnalysisData($task['task_id'], $claim['revision'],
+            hash('sha256', implode('|', $codes)), $items,
+            [['name'=>'Worker category','count'=>count($items),'target'=>$workerTarget,'confidence'=>'high']]);
+        return $workerJobs->confirmImport($task['task_id'], $analysis['revision'], $analysis['snapshot']['plan_hash'], 40,
+            [['source_category'=>'Worker category','target'=>$workerTarget,'confidence'=>'high']]);
+    };
+    $workerRuntime = [
+        'lock_source'=>static function (int $sourceId): ?SourceLock {
+            $lock = new SourceLock();
+            return $lock->acquire($sourceId) ? $lock : null;
+        },
+        'load_source'=>static fn(int $sourceId): ?Shared => Shared::query()->find($sourceId),
+        'fingerprint'=>static fn(Shared $source): string => SourceIdentity::fingerprint($source),
+        'fetch_catalog'=>static function (): never { throw new RuntimeException('confirmed worker rescanned catalog'); },
+        'classify'=>static function (): never { throw new RuntimeException('confirmed worker repeated classification'); },
+        'assert_plan_capacity'=>static fn(Shared $source, string $alias, array $items) =>
+            $mapper->assertPlanCapacity($source, $alias, $items),
+        'import_planned_item'=>static fn(Shared $source, array $item, string $alias, array $target,
+            string $planHash, Options $options): string =>
+            $workerImporter->importPlanned($source, $item, $mapper, $alias, $target, $planHash, $options),
+        'begin_source'=>static fn(int $sourceId) => $workerBudget->beginSource($sourceId),
+        'end_source'=>static fn() => $workerBudget->endSource(),
+        'detail_diagnostics'=>static fn(): ?array => $workerImporter->detailDiagnostics(),
+    ];
+    $integratedWorker = new JobWorker($workerJobs, $workerRuntime);
+    $successTask = $makeWorkerTask(['worker-success']);
+    $categoryCountBeforeWorker = Category::query()->count();
+    $successResult = $integratedWorker->runOne(20);
+    $successSaved = (new JobService())->get($successTask['task_id']);
+    $persistedWorkerItem = Commodity::query()->where('shared_id', $workerSourceId)->where('shared_code', 'worker-success')->first();
+    mapperExpect($persistedWorkerItem !== null && $persistedWorkerItem->price === 14.0
+        && $persistedWorkerItem->shared_sync === 0 && str_starts_with($persistedWorkerItem->code, 'PKS1')
+        && Category::query()->count() > $categoryCountBeforeWorker && $mapper->hasSourceMapping($workerSourceId),
+        'worker did not commit a real managed product and category mapping before checkpoint');
+    mapperExpect($successResult['status'] === JobStore::STATE_COMPLETED
+        && $successSaved['progress'] === ['total'=>1,'processed'=>1,'succeeded'=>1,'failed'=>0,'skipped'=>0]
+        && $successSaved['last_detail_diagnostic']['diagnostics']['json_valid'] === true
+        && $successSaved['last_detail_diagnostic']['diagnostics']['response_structure']['business_code'] === 200,
+        'committed real product lost its worker checkpoint: ' . $successResult['error_code']);
+
+    // Model process death after a real first-item commit but before any job checkpoint.
+    $recoveryTask = $makeWorkerTask(['worker-recover-first', 'worker-recover-second']);
+    $recoveryClaim = $workerJobs->beginWork($recoveryTask['task_id'], $recoveryTask['revision']);
+    $snapshot = $workerJobs->loadImportSnapshot($recoveryTask['task_id'], $recoveryClaim['revision'], $workerFingerprint);
+    $recoveryOptions = Options::fromArray(['mode'=>'full','source_ids'=>(string)$workerSourceId,'premium_percent'=>40]);
+    $sourceLease = new SourceLock();
+    mapperExpect($sourceLease->acquire($workerSourceId), 'could not lock synthetic pre-checkpoint import');
+    $workerBudget->beginSource($workerSourceId);
+    try {
+        $committedOutcome = $workerImporter->importPlanned($workerSource, $snapshot['items'][0], $mapper,
+            $workerAlias, $workerTarget, $snapshot['plan_hash'], $recoveryOptions);
+    } finally {
+        $workerBudget->endSource();
+        $sourceLease->release();
+    }
+    mapperExpect($committedOutcome === CommodityImporter::OUTCOME_CREATED
+        && $workerJobs->get($recoveryTask['task_id'])['progress']['processed'] === 0,
+        'interruption fixture did not commit exactly before the durable item checkpoint');
+    $recoveryProducts = Commodity::query()->where('shared_id', $workerSourceId)->count();
+    $recoveryCategories = Category::query()->count();
+    $recoveryMap = (string)file_get_contents($mapPath);
+    $snapshotStore = new SnapshotStore();
+    $binding = $recoveryClaim['snapshot'];
+    $readBinding = $binding + ['source_fingerprint'=>$workerFingerprint];
+    $validSnapshot = $snapshotStore->read($recoveryTask['task_id'], $readBinding['sha256'],
+        $readBinding['source_fingerprint'], $readBinding['plan_hash']);
+    mapperExpect($validSnapshot['items'] === $snapshot['items'],
+        'valid frozen snapshot did not pass the binding check before negative cases');
+    foreach (['sha256','plan_hash','source_fingerprint'] as $bindingField) {
+        $wrongBinding = array_replace($readBinding, [$bindingField=>str_repeat('0', 64)]);
+        mapperFailsWithMessage(static fn() => $snapshotStore->read($recoveryTask['task_id'], $wrongBinding['sha256'],
+            $wrongBinding['source_fingerprint'], $wrongBinding['plan_hash']),
+            '后台任务目录快照身份绑定不一致。',
+            'recovery snapshot accepted a changed ' . $bindingField);
+    }
+    mapperFailsWithMessage(static fn() => $workerJobs->loadImportSnapshot($recoveryTask['task_id'], $recoveryClaim['revision'],
+        str_repeat('0', 64)), '货源身份已变化，请取消当前任务并重新分析。',
+        'interrupted task accepted a changed live source fingerprint');
+    $globalWorkerLock = fopen($stateSite . '/runtime/extensions/PikaCatalogHub/worker.run.lock', 'c');
+    mapperExpect(is_resource($globalWorkerLock)
+        && chmod($stateSite . '/runtime/extensions/PikaCatalogHub/worker.run.lock', 0600)
+        && flock($globalWorkerLock, LOCK_EX | LOCK_NB),
+        'could not hold the native worker recovery lock');
+    try {
+        $recovered = $workerJobs->recoverInterrupted();
+        $requeued = $workerJobs->get($recoveryTask['task_id']);
+        mapperExpect(count($recovered) === 1 && $requeued['state'] === JobStore::STATE_QUEUED_IMPORT
+            && $requeued['snapshot'] === $binding && $requeued['premium_percent'] === '40'
+            && $requeued['progress'] === $recoveryClaim['progress'],
+            'native recovery changed the frozen decision or uncheckpointed cursor');
+        $requestsBeforeManagedReplay = $newDetailRequests;
+        $firstReplay = $integratedWorker->runOne(1);
+        mapperExpect($firstReplay['status'] === JobStore::STATE_QUEUED_IMPORT
+            && $firstReplay['counts']['processed'] === 1 && $firstReplay['counts']['skipped'] === 1
+            && $newDetailRequests === $requestsBeforeManagedReplay
+            && Commodity::query()->where('shared_id', $workerSourceId)->count() === $recoveryProducts
+            && Category::query()->count() === $recoveryCategories && (string)file_get_contents($mapPath) === $recoveryMap,
+            'native already_managed recovery repeated HTTP, inserted a duplicate or changed its mapping');
+        $secondReplay = $integratedWorker->runOne(1);
+        $settled = (new JobService())->get($recoveryTask['task_id']);
+        mapperExpect($secondReplay['status'] === JobStore::STATE_COMPLETED
+            && $settled['progress'] === ['total'=>2,'processed'=>2,'succeeded'=>1,'failed'=>0,'skipped'=>1]
+            && $settled['snapshot'] === $binding && $newDetailRequests === $requestsBeforeManagedReplay + 1
+            && Commodity::query()->where('shared_id', $workerSourceId)->count() === $recoveryProducts + 1,
+            'native recovery did not checkpoint exactly one new tail product');
+    } finally {
+        flock($globalWorkerLock, LOCK_UN);
+        fclose($globalWorkerLock);
+    }
+
+    $rejectWorkerDetail = true;
+    $businessTask = $makeWorkerTask(['worker-business-failure']);
+    $beforeBusinessFailure = $localSnapshot();
+    $businessResult = $integratedWorker->runOne(20);
+    $businessSaved = (new JobService())->get($businessTask['task_id']);
+    mapperExpect($businessResult['error_code'] === CommodityImportFailure::DETAIL_BUSINESS_REJECTED
+        && $businessSaved['error_code'] === CommodityImportFailure::DETAIL_BUSINESS_REJECTED
+        && $businessSaved['progress']['processed'] === 0
+        && $businessSaved['last_detail_diagnostic']['diagnostics']['category'] === 'business'
+        && $businessSaved['last_detail_diagnostic']['diagnostics']['response_structure']['business_code'] === 500
+        && !str_contains(json_encode($businessSaved, JSON_THROW_ON_ERROR), 'synthetic business rejection')
+        && Commodity::query()->where('shared_id', $workerSourceId)->where('shared_code', 'worker-business-failure')->count() === 0,
+        'real gateway rejection lost its original safe code/structure or persisted a product');
+    mapperExpect($beforeBusinessFailure === $localSnapshot(),
+        'detail rejection changed category rows or mapping before its safe failure checkpoint');
     fwrite(STDOUT, "local planned category mapper behavior: PASS\n");
 }

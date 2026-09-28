@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "PikaCatalogHub",
   "name": "智能货源中心",
-  "version": "0.6.9",
+  "version": "0.6.10",
   "description": "管理共享货源、建议商品分类，确认后分批后台入库，支持暂停、继续和取消任务。",
   "type": "plugin",
   "namespace": "Pika\\LocalExtensions\\PikaCatalogHub\\",

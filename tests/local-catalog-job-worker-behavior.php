@@ -63,6 +63,8 @@ namespace {
     use Pika\LocalExtensions\PikaCatalogHub\Service\JobWorkerFailure;
     use Pika\LocalExtensions\PikaSupplySync\Service\CommodityImportFailure;
     use Pika\LocalExtensions\PikaSupplySync\Service\CommodityImporter;
+    use Pika\LocalExtensions\PikaSupplySync\Service\SafeHttpClient;
+    use Pika\LocalExtensions\PikaSupplySync\Service\SourcePolicy;
     use Pika\LocalExtensions\PikaSupplySync\Service\UpstreamFailure;
     use Pika\LocalExtensions\PikaSupplySync\Service\UpstreamCategoryTree;
 
@@ -1374,6 +1376,125 @@ namespace {
             workerExpect($fatalWorker->runOne(20)['status'] === 'idle' && $fatalCalls === [0,1],
                 'fatal retry error automatically repeated the failed or unknown write');
         }
+
+        // Exercise real HTTP observations across the worker and both durable validators.
+        // Only the transport is synthetic; diagnostics must be produced by SafeHttpClient.
+        foreach (['success', 'http_rejected', 'json'] as $httpOutcome) {
+            $httpTask = $makeIssueTask(1);
+            $httpCalls = 0;
+            $httpClient = null;
+            $headerObservation = new ReflectionMethod(SafeHttpClient::class, 'recordDiagnosticHeader');
+            $measurements = new ReflectionMethod(SafeHttpClient::class, 'curlMeasurements');
+            $httpDiagnosticProperty = new ReflectionProperty(SafeHttpClient::class, 'diagnostics');
+            $httpClient = new SafeHttpClient(
+                new SourcePolicy(static fn(string $host): array => ['93.184.216.34']),
+                static function (array $endpoint, string $address, string $method) use (
+                    &$httpCalls, &$httpClient, $httpOutcome, $headerObservation, $measurements,
+                    $httpDiagnosticProperty,
+                ): array {
+                    $httpCalls++;
+                    workerExpect($method === 'POST' && $endpoint['host'] === 'fixture.example',
+                        'HTTP regression fixture escaped its synthetic detail route');
+                    $status = $httpOutcome === 'http_rejected' ? 403 : 200;
+                    foreach (["HTTP/1.1 $status Fixture\r\n", "Content-Type: application/json\r\n", "\r\n"] as $line) {
+                        $headerObservation->invoke($httpClient, $line);
+                    }
+                    // Use the existing curl collector with synthetic native numeric observations.
+                    $httpDiagnosticProperty->setValue($httpClient, array_replace(
+                        $httpDiagnosticProperty->getValue($httpClient),
+                        $measurements->invoke($httpClient, ['dns'=>0.001, 'connect'=>0.002,
+                            'tls'=>0.003, 'first_byte'=>0.004, 'total'=>0.005, 'received_bytes'=>2]),
+                    ));
+                    return ['status'=>$status, 'content_type'=>'application/json',
+                        'body'=>$httpOutcome === 'json' ? '{' : '{}', 'connected_ip'=>$address];
+                },
+            );
+            $httpRuntime = $issueRuntime + [
+                'detail_diagnostics'=>static fn(): ?array => $httpClient->detailDiagnostics(),
+                'import_planned_item'=>static function () use ($httpClient): string {
+                    try {
+                        $httpClient->postJson('https://fixture.example/shared/commodity/item', [], ['code'=>'fixture']);
+                    } catch (UpstreamFailure $failure) {
+                        throw new CommodityImportFailure($failure->diagnostics['category'] === 'json'
+                            ? CommodityImportFailure::DETAIL_JSON_INVALID
+                            : CommodityImportFailure::DETAIL_RESPONSE_INVALID, $failure);
+                    }
+                    return CommodityImporter::OUTCOME_CREATED;
+                },
+            ];
+            $httpResult = (new JobWorker($issueJobs, $httpRuntime))->runOne(20);
+            $httpSaved = (new JobService())->get($httpTask['task_id']);
+            $fullObservation = $httpClient->detailDiagnostics();
+            workerExpect($httpCalls === 1 && $fullObservation['stage'] === 'detail'
+                && count($fullObservation['attempt_history']) === 1
+                && $fullObservation['timings_ms']['total'] === 5 && $fullObservation['received_bytes'] === 2,
+                'synthetic HTTP transport did not generate the current extended observation');
+            workerExpect($httpResult['error_code'] !== 'WORKER_STATE_FAILED'
+                && $httpSaved['last_detail_diagnostic'] !== null,
+                'real HTTP detail observation failed durable worker state: ' . $httpResult['error_code']);
+            $storedObservation = $httpSaved['last_detail_diagnostic']['diagnostics'];
+            workerExpect($storedObservation['mime_category'] === 'application_json'
+                && $storedObservation['mime_count'] === 1 && !$storedObservation['mime_compatibility']
+                && !array_intersect(['stage','attempt_history','timings_ms','received_bytes'], array_keys($storedObservation)),
+                'job diagnostic lost its legacy MIME contract or persisted transfer-only fields');
+            if ($httpOutcome === 'success') {
+                workerExpect($httpResult['status'] === JobStore::STATE_COMPLETED
+                    && $httpSaved['progress'] === ['total'=>1,'processed'=>1,'succeeded'=>1,'failed'=>0,'skipped'=>0]
+                    && $storedObservation['json_valid'] === true && $storedObservation['category'] === 'none',
+                    'successful HTTP observation prevented a completed item checkpoint');
+            } elseif ($httpOutcome === 'http_rejected') {
+                workerExpect($httpSaved['state'] === JobStore::STATE_FAILED
+                    && $httpSaved['error_code'] === CommodityImportFailure::DETAIL_RESPONSE_INVALID
+                    && $httpSaved['progress']['processed'] === 0 && $storedObservation['http_status'] === 403
+                    && $storedObservation['category'] === 'http_rejected',
+                    'fatal HTTP observation lost its original safe failure code');
+            } else {
+                workerExpect($httpSaved['error_code'] === 'IMPORT_FINISHED_WITH_ISSUES'
+                    && $httpSaved['item_failures'] === [['index'=>0,'code'=>CommodityImportFailure::DETAIL_JSON_INVALID,'attempts'=>1]]
+                    && $httpSaved['progress']['processed'] === 1 && $httpSaved['progress']['failed'] === 1
+                    && $storedObservation['json_error_code'] === JSON_ERROR_SYNTAX
+                    && $storedObservation['json_error'] === 'syntax' && $storedObservation['json_valid'] === false,
+                    'JSON observation lost its isolated failure checkpoint or decode-error detail');
+            }
+        }
+
+        // The four pre-existing durable shapes remain unchanged after worker adaptation.
+        $legacyBase = ['category'=>'transport','http_status'=>0,'curl_code'=>28,'elapsed_ms'=>5,'attempts'=>1];
+        $legacyMime = ['category'=>'schema','http_status'=>200,'curl_code'=>0,'elapsed_ms'=>5,'attempts'=>1,
+            'mime_category'=>'application_json','mime_count'=>1,'json_valid'=>true,'mime_compatibility'=>false];
+        $legacyJson = array_replace($legacyMime, ['category'=>'json','json_valid'=>false])
+            + ['json_error_code'=>JSON_ERROR_SYNTAX,'json_error'=>'syntax'];
+        $legacyStructure = $legacyMime + ['response_structure'=>[
+            'business_code'=>200,'data_type'=>'empty_array_or_object','data_count'=>0]];
+        foreach ([$legacyBase, $legacyMime, $legacyJson, $legacyStructure] as $legacyObservation) {
+            $legacyTask = $makeIssueTask(1);
+            $legacyResult = $makeIssueWorker(static function () use ($legacyObservation): never {
+                throw new CommodityImportFailure(CommodityImportFailure::DETAIL_RESPONSE_INVALID,
+                    new UpstreamFailure($legacyObservation['category'], $legacyObservation));
+            })->runOne(20);
+            $legacySaved = (new JobService())->get($legacyTask['task_id']);
+            workerExpect($legacyResult['error_code'] === CommodityImportFailure::DETAIL_RESPONSE_INVALID
+                && $legacySaved['last_detail_diagnostic'] === ['index'=>0,'diagnostics'=>$legacyObservation],
+                'worker adaptation changed a supported legacy diagnostic shape');
+        }
+
+        $strictTask = $makeIssueTask(1);
+        $strictClaim = $issueJobs->beginWork($strictTask['task_id'], $strictTask['revision']);
+        foreach ([
+            $legacyMime + ['body'=>'TOPSECRET'],
+            $legacyMime + ['stage'=>'detail'],
+            array_replace($legacyMime, ['http_status'=>999]),
+            array_replace($legacyMime, ['mime_compatibility'=>true]),
+            array_diff_key($legacyMime, ['mime_count'=>true]),
+            $legacyStructure + ['json_error_code'=>JSON_ERROR_SYNTAX,'json_error'=>'syntax'],
+        ] as $invalidDiagnostic) {
+            workerFails(static fn() => $issueJobs->fail($strictClaim['task_id'], $strictClaim['revision'],
+                CommodityImportFailure::DETAIL_RESPONSE_INVALID, ['index'=>0,'diagnostics'=>$invalidDiagnostic]),
+                'strict durable diagnostic boundary accepted unsafe, partial or incompatible fields');
+            workerExpect($issueJobs->get($strictTask['task_id']) === $strictClaim,
+                'rejected diagnostic changed the durable task');
+        }
+        $issueJobs->fail($strictClaim['task_id'], $strictClaim['revision'], CommodityImportFailure::DETAIL_RESPONSE_INVALID);
 
         // Safe MIME observations are counted only when the corresponding item settles successfully.
         $diagnosticTask = $makeIssueTask(2);

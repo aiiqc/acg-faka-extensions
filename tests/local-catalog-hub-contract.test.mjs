@@ -21,7 +21,7 @@ test('declares a local CatalogHub workflow without taking over the official plug
     assert.equal(manifest.id, 'PikaCatalogHub');
     assert.equal(manifest.name, '智能货源中心');
     assert.equal(manifest.description, '管理共享货源、建议商品分类，确认后分批后台入库，支持暂停、继续和取消任务。');
-    assert.equal(manifest.version, '0.6.9');
+    assert.equal(manifest.version, '0.6.10');
     assert.equal(manifest.namespace, 'Pika\\LocalExtensions\\PikaCatalogHub\\');
     assert.equal(manifest.bootstrap, 'bootstrap.php');
     assert.deepEqual(manifest.hooks, [
@@ -132,7 +132,7 @@ test('admin requests only queue work while the bounded worker reuses the safe Su
     assert.match(worker, /new PlannedCategoryMapper\(/);
     assert.match(worker, /->checkpoint\(/);
     assert.match(worker, /->yieldImport\(/);
-    assert.doesNotMatch(worker, /curl_|file_get_contents\s*\(\s*\$source|Str::generateSignature/);
+    assert.doesNotMatch(worker, /\bcurl_[a-z_]+\s*\(|file_get_contents\s*\(\s*\$source|Str::generateSignature/);
 });
 
 test('bounds literal rules, aliases, source reads and issue samples', () => {
