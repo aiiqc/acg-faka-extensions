@@ -65,7 +65,7 @@ test('Pika theme uses Metadata.php as its single runtime metadata and version so
         const header = fs.readFileSync(path.join(themeRoot, relative), 'utf8');
         assert.match(
             header,
-            new RegExp(`href="/app/View/User/Theme/Pika/Assets/pika\\.css\\?theme=${version.replaceAll('.', '\\.') }&amp;rev=20260927-h1hide1"`),
+            new RegExp(`href="/app/View/User/Theme/Pika/Assets/pika\\.css\\?theme=${version.replaceAll('.', '\\.') }&amp;rev=20260928-noticeflow1"`),
             `${relative} must retain the theme version and invalidate the changed CSS resource`,
         );
         assert.doesNotMatch(header, /["']\/app\/View\/User\/Theme\/Pika\/Assets\/pika\.css["']/);

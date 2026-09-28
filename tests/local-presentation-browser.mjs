@@ -144,7 +144,8 @@ async function checkSeoPresentation() {
         return Object.hasOwn(data.categories, id) ? data.categories[id] : {...home, canonical: requested ? '' : home.canonical};
     };
     const links = ['https://example.com/support', 'https://example.com/guide', `https://example.com/${'long-contact-path-'.repeat(12)}`];
-    const notice = `<div class="notice-wrapper" style="grid-template-columns:repeat(3,1fr)"><div class="notice warning"><span class="notice-symbol">!</span><span>原有公告文字与</span> <span class="highlight">强调文本</span> <span>保持不变，长链接仍需完整可读。</span></div><div class="btn-box">${links.map((link, i) => `<a href="${link}">${i < 2 ? ['联系入口', '说明入口'][i] : link}</a>`).join('')}</div></div>`;
+    // Owner-authored styles arrive after the theme asset; use synthetic text only.
+    const notice = `<style>.notice-wrapper .notice { margin:8px 12px; padding:10px 14px; display:flex; align-items:center; gap:8px; }</style><div class="notice-wrapper" style="grid-template-columns:repeat(3,1fr)"><div class="notice info"><span class="notice-symbol">!</span><span>原有公告文字与</span> <span class="highlight">强调文本</span> <span>保持不变，长链接仍需完整可读。</span></div><div class="notice danger"><i aria-hidden="true">!</i>合成公告普通正文用于检查手机连续阅读，不应把后面的强调内容挤成独立窄列。<span class="highlight">合成强调内容保持正常横向阅读。</span></div><div class="notice warning"><i aria-hidden="true">!</i>合成公告说明正文与后续链接应自然换行，不应各占一条狭窄竖列。<a href="${links[0]}">查看合成说明链接</a></div><div class="btn-box">${links.slice(1).map((link, i) => `<a href="${link}">${i === 0 ? '说明入口' : link}</a>`).join('')}</div></div>`;
     const html = url => {
         const initial = expected(url);
         return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(initial.title)}</title><meta name="description" content="${escape(initial.description)}">${initial.canonical ? `<link rel="canonical" data-pika-canonical href="${initial.canonical}">` : ''}${styles}</head><body class="fbfaka-public"><main class="container py-4 fbfaka-storefront" data-pika-seo="${escape(JSON.stringify(data))}"><h1 class="fbfaka-store-title">${escape(initial.heading)}</h1><section class="panel fbfaka-notice"><div class="panel-header"><span class="icon">!</span><h6 class="panel-title">最新公告</h6></div><div class="panel-body">${notice}</div></section><div class="fbfaka-category-group"><button class="category-parent" data-id="10" aria-expanded="false">父分类</button><div class="category-children" hidden><a class="switch-category" data-id="7" data-count="2" href="/cat/7">工具</a></div></div><a class="switch-category" data-id="9" data-count="1" href="/cat/9">资料</a><a class="switch-category" data-id="recommend" data-count="1" href="/cat/recommend">精选</a><div class="item-list"></div></main></body></html>`;
@@ -200,7 +201,7 @@ async function checkSeoPresentation() {
         }
         await page.goto('https://pika-fixture.invalid/');
         await setup(page);
-        for (const width of [375, 1440]) {
+        for (const width of [320, 375, 575, 576, 1440]) {
             await page.setViewportSize({width, height: 1000});
             await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
             const layout = await page.evaluate(() => {
@@ -215,19 +216,38 @@ async function checkSeoPresentation() {
                     noticeOverflow: notice.scrollWidth > notice.clientWidth + 1,
                     noticeText: notice.textContent, links: anchors.map(link => link.href),
                     singleColumn: getComputedStyle(notice.querySelector('.notice-wrapper')).gridTemplateColumns.split(' ').length === 1,
-                    linkOverflow: anchors.some(link => link.scrollWidth > link.clientWidth + 1)};
+                    linkOverflow: anchors.some(link => link.scrollWidth > link.clientWidth + 1),
+                    noticeRows: Array.from(notice.querySelectorAll('.notice'), row => ({
+                        display: getComputedStyle(row).display,
+                        width: row.getBoundingClientRect().width,
+                        height: row.getBoundingClientRect().height,
+                        overflow: row.scrollWidth > row.clientWidth + 1,
+                        inlineStyle: row.getAttribute('style'),
+                        children: Array.from(row.children, child => ({
+                            tag: child.tagName, className: child.className,
+                            display: getComputedStyle(child).display,
+                            width: child.getBoundingClientRect().width,
+                            height: child.getBoundingClientRect().height,
+                        })),
+                    }))};
             });
             if (phase === 'before') assert.ok(layout.headingWidth > 100 && layout.headingHeight > 20, `baseline visible H1 ${width}`);
             check(layout.headingWidth === 1 && layout.headingHeight === 1
                 && layout.headingPosition === 'absolute' && layout.headingOverflow === 'hidden'
                 && layout.headingClip === 'rect(0px, 0px, 0px, 0px)' && layout.headingClipPath === 'inset(50%)', `visually hidden H1 ${width}`);
-            if (width === 375) {
-                check(layout.singleColumn, '375px notice single column');
-                check(!layout.overflow && !layout.linkOverflow, '375px no notice/long-link overflow');
-            } else {
+            if (width <= 575) {
+                check(layout.singleColumn, `${width}px notice single column`);
+                check(!layout.overflow && !layout.linkOverflow && layout.noticeRows.every(row => !row.overflow), `${width}px no notice/long-link overflow`);
+                check(layout.noticeRows.every(row => row.display === 'block'), `${width}px late notice style cannot restore flex columns`);
+                check(layout.noticeRows.flatMap(row => row.children)
+                    .filter(child => child.className === 'highlight' || child.tag === 'A')
+                    .every(child => child.display === 'inline'), `${width}px emphasis and notice link remain inline`);
+            } else if (width === 1440) {
                 check(layout.noticeBodyWidth > 500, '1440px readable notice body width');
                 check(!layout.overflow && !layout.noticeOverflow && !layout.linkOverflow, '1440px no notice/long-link overflow');
             }
+            if (width >= 576) check(layout.noticeRows.every(row => row.display === 'flex'), `${width}px retains authored flex layout`);
+            check(layout.noticeRows.every(row => row.inlineStyle === null), `${width}px fixture does not use inline layout styles`);
             check(JSON.stringify(layout.links) === JSON.stringify(links), `three unchanged links ${width}`);
             check(layout.noticeText.includes('原有公告文字与') && layout.noticeText.includes('强调文本'), `original notice text ${width}`);
             results.push({width, layout});
@@ -252,7 +272,7 @@ async function checkHiddenHeadingPresentation() {
     const rendered = fs.realpathSync(process.env.PIKA_QA_RENDER_ROOT);
     const source = phase === 'before' ? baseline : root;
     const read = (directory, relative) => fs.readFileSync(path.join(directory, relative), 'utf8');
-    const normalizeVersion = text => text.replaceAll('1.1.9', '1.1.8').replaceAll('20260927-h1hide1', '20260927-seo1');
+    const normalizeVersion = text => text.replaceAll('1.1.9', '1.1.8').replaceAll('20260928-noticeflow1', '20260927-seo1');
     for (const relative of ['Index/Header.html', 'Index/Footer.html', 'Index/Index.html', 'Index/Item.html', 'Seo.php', 'Assets/index.js']) {
         assert.equal(normalizeVersion(read(root, `themes/Pika/${relative}`)), read(baseline, `themes/Pika/${relative}`),
             `Prior Smarty markup remains valid except resource versions: ${relative}`);
@@ -310,7 +330,7 @@ async function checkHiddenHeadingPresentation() {
                 assert.equal(measured.brand, 'Fixture Shop');
                 assert.ok(measured.brandWidth > 50 && measured.brandHeight > 20 && measured.logoLoaded);
                 assert.equal(measured.pageOverflow, false);
-                if (phase === 'after') assert.match(measured.cssUrl, /theme=1\.1\.9&rev=20260927-h1hide1$/);
+                if (phase === 'after') assert.match(measured.cssUrl, /theme=1\.1\.9&rev=20260928-noticeflow1$/);
                 assert.ok(stylesheetRequests.includes(measured.cssUrl));
                 records.push({viewportWidth: width, id, ...measured});
                 await page.screenshot({path: path.join(output, `${phase}-hidden-heading-${id}-${width}.png`), fullPage: true});

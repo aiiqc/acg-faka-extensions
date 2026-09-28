@@ -1839,7 +1839,8 @@ body > footer,
     grid-template-columns: minmax(0, 1fr) !important;
   }
 
-  .fbfaka-notice .notice {
+  /* Keep phone text flow ahead of equally specific styles inside the notice. */
+  .fbfaka-storefront .fbfaka-notice .notice {
     display: block;
     min-width: 0;
     overflow-wrap: anywhere;
