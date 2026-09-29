@@ -3108,6 +3108,10 @@ body.uc-body {
   background: rgba(255, 253, 247, 0.96);
 }
 
+.fbfaka-purchase-card .sku.is-primary {
+  color: var(--fb-ink);
+}
+
 .fbfaka-purchase-card .pay-list .pay:hover,
 .auth-card .form-control:focus {
   border-color: var(--fb-ink);

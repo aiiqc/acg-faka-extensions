@@ -65,7 +65,7 @@ test('Pika theme uses Metadata.php as its single runtime metadata and version so
         const header = fs.readFileSync(path.join(themeRoot, relative), 'utf8');
         assert.match(
             header,
-            new RegExp(`href="/app/View/User/Theme/Pika/Assets/pika\\.css\\?theme=${version.replaceAll('.', '\\.') }&amp;rev=20260928-noticeflow1"`),
+            new RegExp(`href="/app/View/User/Theme/Pika/Assets/pika\\.css\\?theme=${version.replaceAll('.', '\\.') }&amp;rev=20260929-skucontrast1"`),
             `${relative} must retain the theme version and invalidate the changed CSS resource`,
         );
         assert.doesNotMatch(header, /["']\/app\/View\/User\/Theme\/Pika\/Assets\/pika\.css["']/);
@@ -235,6 +235,15 @@ test('all three Pika page shells render the same safe animated background', () =
     assert.match(css, /background: #ece7db url\("\/app\/View\/User\/Theme\/Pika\/Assets\/topfans-bg-poster\.jpg"\) center \/ cover fixed;/);
     assert.match(css, /\.fbfaka-background-video\s*\{[\s\S]*?position: fixed;[\s\S]*?object-fit: cover;/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.fbfaka-background-video\s*\{[\s\S]*?display: none;/);
+});
+
+test('selected purchase specifications use the existing ink color without restyling controls', () => {
+    const css = fs.readFileSync(path.join(assetRoot, 'pika.css'), 'utf8');
+    const rules = [...css.matchAll(/\.fbfaka-purchase-card \.sku\.is-primary\s*\{([^}]+)\}/g)];
+
+    assert.equal(rules.length, 1, 'selected specifications have one scoped contrast override');
+    assert.match(rules[0][1], /^\s*color:\s*var\(--fb-ink\);\s*$/,
+        'the override must change only text color, retaining backgrounds, badges and layout');
 });
 
 test('payment navigation and upstream query fields use the theme safety runtime', () => {
