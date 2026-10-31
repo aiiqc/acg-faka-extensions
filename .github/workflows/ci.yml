@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  theme-checks:
+    name: Theme Node and PHP checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          coverage: none
+
+      - name: Node theme contracts (no Acg-Faka runtime)
+        timeout-minutes: 5
+        run: |
+          node --test \
+            tests/local-theme-package-contract.test.mjs \
+            tests/local-theme-safe-dom-runtime.test.mjs \
+            tests/local-theme-rules-navigation-runtime.test.mjs \
+            tests/local-theme-acg-compat-runtime.test.mjs
+
+      - name: PHP theme config behavior (no Acg-Faka runtime)
+        timeout-minutes: 5
+        run: php tests/local-theme-config-behavior.php
